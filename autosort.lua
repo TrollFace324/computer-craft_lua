@@ -1,20 +1,14 @@
 -- autosort.lua
--- Auto sorter for CC:Tweaked / ComputerCraft
--- Fixed input barrel: carved_wood:barrel_0
--- All other connected inventories are used as storage chests automatically.
+-- Compact auto sorter for one Advanced Monitor
+-- Only one button: SAVE
 
 ------------------------------------------------------------
 -- SETTINGS
 ------------------------------------------------------------
 
 local INPUT_CHEST = "carved_wood:barrel_0"
-
-local SORT_EVERY = 5
-
 local TEMPLATE_FILE = "autosort_template.tbl"
-
--- false = match only item name
--- true = match item name + NBT hash
+local SORT_EVERY = 5
 local MATCH_NBT = false
 
 ------------------------------------------------------------
@@ -25,13 +19,12 @@ local serialize = textutils.serialise or textutils.serialize
 local unserialize = textutils.unserialise or textutils.unserialize
 
 local template = {
-  version = 4,
+  version = 5,
   match_nbt = MATCH_NBT,
   saved_at = "never",
   chests = {},
 }
 
-local autoSort = true
 local lastStatus = "Ready"
 local lastMoved = 0
 local lastUnknown = 0
@@ -42,6 +35,7 @@ local monitorName = nil
 
 if monitor then
   monitorName = peripheral.getName(monitor)
+
   pcall(function()
     monitor.setTextScale(0.5)
   end)
@@ -52,6 +46,17 @@ local screen = monitor or term.current()
 ------------------------------------------------------------
 -- HELPERS
 ------------------------------------------------------------
+
+local function shortText(text, len)
+  text = tostring(text or "")
+  len = len or 20
+
+  if #text <= len then
+    return text
+  end
+
+  return string.sub(text, 1, len - 3) .. "..."
+end
 
 local function getTimeString()
   local ok, result = pcall(function()
@@ -96,20 +101,6 @@ local function addUnique(list, value)
   table.insert(list, value)
 end
 
-local function shortName(name, maxLen)
-  maxLen = maxLen or 40
-
-  if not name then
-    return "none"
-  end
-
-  if #name <= maxLen then
-    return name
-  end
-
-  return string.sub(name, 1, maxLen - 3) .. "..."
-end
-
 ------------------------------------------------------------
 -- FILES
 ------------------------------------------------------------
@@ -118,7 +109,7 @@ local function saveTemplateFile()
   local f = fs.open(TEMPLATE_FILE, "w")
 
   if not f then
-    lastStatus = "Cannot save template file"
+    lastStatus = "Cannot save file"
     return false
   end
 
@@ -149,7 +140,7 @@ local function loadTemplateFile()
     MATCH_NBT = data.match_nbt or false
     lastStatus = "Template loaded"
   else
-    lastStatus = "Template file broken"
+    lastStatus = "Template broken"
   end
 end
 
@@ -180,10 +171,6 @@ local function getStorageChests()
   end
 
   return result
-end
-
-local function countStorageChests()
-  return #getStorageChests()
 end
 
 local function countTemplateChests()
@@ -261,14 +248,13 @@ end
 
 local function saveTemplate()
   if not exists(INPUT_CHEST) then
-    lastStatus = "Input barrel not found"
+    lastStatus = "Input not found"
     return
   end
 
   local storageChests = getStorageChests()
   local newChests = {}
-  local chestCount = 0
-  local sampleCount = 0
+  local samples = 0
 
   for _, chestName in ipairs(storageChests) do
     local items = scanChest(chestName)
@@ -276,7 +262,7 @@ local function saveTemplate()
 
     for _ in pairs(items) do
       hasItems = true
-      sampleCount = sampleCount + 1
+      samples = samples + 1
     end
 
     if hasItems then
@@ -284,20 +270,18 @@ local function saveTemplate()
         saved_at = getTimeString(),
         items = items,
       }
-
-      chestCount = chestCount + 1
     end
   end
 
   template = {
-    version = 4,
+    version = 5,
     match_nbt = MATCH_NBT,
     saved_at = getTimeString(),
     chests = newChests,
   }
 
   if saveTemplateFile() then
-    lastStatus = "Template saved: " .. sampleCount .. " samples"
+    lastStatus = "Saved: " .. samples .. " samples"
   end
 end
 
@@ -357,12 +341,12 @@ end
 
 local function sortOnce()
   if not exists(INPUT_CHEST) then
-    lastStatus = "Input barrel not found"
+    lastStatus = "Input not found"
     return
   end
 
   if countSamples() == 0 then
-    lastStatus = "No template. Press SAVE TEMPLATE"
+    lastStatus = "Press SAVE first"
     return
   end
 
@@ -373,9 +357,7 @@ local function sortOnce()
   local unknownTotal = 0
   local fullTotal = 0
 
-  local items = input.list()
-
-  for slot, item in pairs(items) do
+  for slot, item in pairs(input.list()) do
     local key = itemKey(item)
     local targets = routes[key]
 
@@ -388,8 +370,6 @@ local function sortOnce()
         fullTotal = fullTotal + remaining
       end
     else
-      -- Item is not in template.
-      -- It stays in the input barrel.
       unknownTotal = unknownTotal + item.count
     end
   end
@@ -398,19 +378,19 @@ local function sortOnce()
   lastUnknown = unknownTotal
   lastFull = fullTotal
 
-  lastStatus = "Sorted: +" .. movedTotal
-    .. " | unknown: " .. unknownTotal
-    .. " | full: " .. fullTotal
+  lastStatus = "M:" .. movedTotal .. " U:" .. unknownTotal .. " F:" .. fullTotal
 end
 
 ------------------------------------------------------------
 -- UI
 ------------------------------------------------------------
 
-local buttons = {
-  save = { x = 2,  y = 3, w = 22, h = 3, label = "SAVE TEMPLATE" },
-  auto = { x = 26, y = 3, w = 18, h = 3, label = "AUTO: ON" },
-  exit = { x = 2,  y = 7, w = 22, h = 3, label = "EXIT" },
+local button = {
+  x = 1,
+  y = 2,
+  w = 10,
+  h = 3,
+  label = "SAVE",
 }
 
 local function setBg(color)
@@ -444,74 +424,60 @@ local function clear()
   screen.setCursorPos(1, 1)
 end
 
-local function drawButton(btn, label, bg)
-  for yy = 0, btn.h - 1 do
-    writeAt(btn.x, btn.y + yy, string.rep(" ", btn.w), colors.white, bg)
+local function drawButton()
+  local sw, sh = screen.getSize()
+
+  button.x = 1
+  button.y = 2
+  button.w = sw
+  button.h = 3
+
+  for yy = 0, button.h - 1 do
+    writeAt(button.x, button.y + yy, string.rep(" ", button.w), colors.white, colors.blue)
   end
 
-  local textX = btn.x + math.floor((btn.w - #label) / 2)
-  local textY = btn.y + math.floor(btn.h / 2)
+  local textX = button.x + math.floor((button.w - #button.label) / 2)
+  local textY = button.y + 1
 
-  if textX < btn.x then
-    textX = btn.x
+  if textX < 1 then
+    textX = 1
   end
 
-  writeAt(textX, textY, label, colors.white, bg)
+  writeAt(textX, textY, button.label, colors.white, colors.blue)
 end
 
 local function draw()
   clear()
 
-  buttons.auto.label = autoSort and "AUTO: ON" or "AUTO: OFF"
+  local sw, sh = screen.getSize()
 
-  writeAt(2, 1, "AUTO SORTER V4", colors.yellow, colors.black)
+  writeAt(1, 1, shortText("SORTER", sw), colors.yellow, colors.black)
 
-  drawButton(buttons.save, buttons.save.label, colors.blue)
-  drawButton(buttons.auto, buttons.auto.label, autoSort and colors.lime or colors.gray)
-  drawButton(buttons.exit, buttons.exit.label, colors.red)
+  drawButton()
 
-  local y = 12
+  writeAt(1, 6, shortText("IN:" .. INPUT_CHEST, sw), colors.white, colors.black)
+  writeAt(1, 7, shortText("FND:" .. tostring(exists(INPUT_CHEST)) .. " ST:" .. #getStorageChests(), sw), colors.white, colors.black)
+  writeAt(1, 8, shortText("T:" .. countTemplateChests() .. " S:" .. countSamples() .. " U:" .. countUniqueItems(), sw), colors.lightGray, colors.black)
+  writeAt(1, 9, shortText("MV:" .. lastMoved .. " UN:" .. lastUnknown .. " FL:" .. lastFull, sw), colors.lightGray, colors.black)
+  writeAt(1, 10, shortText(lastStatus, sw), colors.white, colors.black)
 
-  writeAt(2, y,     "Input: " .. shortName(INPUT_CHEST, 40), colors.white, colors.black)
-  writeAt(2, y + 1, "Input found: " .. tostring(exists(INPUT_CHEST)), colors.white, colors.black)
-  writeAt(2, y + 2, "Storage chests: " .. tostring(countStorageChests()), colors.white, colors.black)
-
-  writeAt(2, y + 4, "Template chests: " .. tostring(countTemplateChests()), colors.lightGray, colors.black)
-  writeAt(2, y + 5, "Item samples: " .. tostring(countSamples()), colors.lightGray, colors.black)
-  writeAt(2, y + 6, "Unique items: " .. tostring(countUniqueItems()), colors.lightGray, colors.black)
-
-  writeAt(2, y + 8, "Status:", colors.yellow, colors.black)
-  writeAt(2, y + 9, shortName(tostring(lastStatus), 44), colors.white, colors.black)
-
-  writeAt(2, y + 11, "Moved: " .. lastMoved .. " Unknown: " .. lastUnknown, colors.lightGray, colors.black)
-  writeAt(2, y + 12, "Full: " .. lastFull, colors.lightGray, colors.black)
-
-  if not monitor then
-    writeAt(2, y + 14, "Use mouse click or Ctrl+T", colors.gray, colors.black)
+  if sh >= 11 then
+    writeAt(1, 11, shortText("Key S also saves", sw), colors.gray, colors.black)
   end
 end
 
-local function inButton(btn, x, y)
-  return x >= btn.x
-    and x < btn.x + btn.w
-    and y >= btn.y
-    and y < btn.y + btn.h
+local function inButton(x, y)
+  return x >= button.x
+    and x < button.x + button.w
+    and y >= button.y
+    and y < button.y + button.h
 end
 
 local function handleClick(x, y)
-  if inButton(buttons.save, x, y) then
+  if inButton(x, y) then
     saveTemplate()
-
-  elseif inButton(buttons.auto, x, y) then
-    autoSort = not autoSort
-    lastStatus = autoSort and "Auto sort enabled" or "Auto sort disabled"
-
-  elseif inButton(buttons.exit, x, y) then
-    clear()
-    error("Exit", 0)
+    draw()
   end
-
-  draw()
 end
 
 ------------------------------------------------------------
@@ -527,26 +493,25 @@ while true do
   local event, a, b, c = os.pullEvent()
 
   if event == "timer" and a == timer then
-    if autoSort then
-      sortOnce()
-      draw()
-    end
-
+    sortOnce()
+    draw()
     timer = os.startTimer(SORT_EVERY)
 
   elseif event == "monitor_touch" then
-    local side = a
     local x = b
     local y = c
-
-    if not monitorName or side == monitorName then
-      handleClick(x, y)
-    end
+    handleClick(x, y)
 
   elseif event == "mouse_click" and not monitor then
     local x = b
     local y = c
     handleClick(x, y)
+
+  elseif event == "key" then
+    if a == keys.s then
+      saveTemplate()
+      draw()
+    end
 
   elseif event == "monitor_resize" or event == "term_resize" then
     draw()
