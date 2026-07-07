@@ -1,0 +1,430 @@
+-- autosort.lua
+-- Автосортировка для CC:Tweaked / ComputerCraft
+-- Нужны: компьютер, wired modem, сундуки/бочки/шалкеры как peripherals, желательно Advanced Monitor.
+
+------------------------------------------------------------
+-- НАСТРОЙКИ
+------------------------------------------------------------
+
+-- Сундук, куда ты складываешь ВСЕ предметы для сортировки.
+-- Узнать имя можно командой: peripherals
+local INPUT_CHEST = "minecraft:barrel_0"
+
+-- Необязательно: сундук для неизвестных предметов.
+-- Если nil, неизвестные предметы останутся во входном сундуке.
+local UNSORTED_CHEST = nil
+-- пример:
+-- local UNSORTED_CHEST = "minecraft:chest_12"
+
+-- Если список пустой, программа сама возьмёт все инвентари,
+-- кроме INPUT_CHEST и UNSORTED_CHEST.
+-- Лучше оставить пустым, если все сундуки в сети — это сортировка.
+local STORAGE_CHESTS = {
+  -- "minecraft:chest_1",
+  -- "minecraft:chest_2",
+  -- "minecraft:barrel_3",
+}
+
+-- Через сколько секунд делать автосортировку.
+local SORT_EVERY = 5
+
+-- Файл, куда сохраняется шаблон.
+local TEMPLATE_FILE = "autosort_template.tbl"
+
+-- false = сортировать только по item.name, например minecraft:diamond.
+-- true = учитывать NBT-хэш. Полезно для книг, зелий, кастомных предметов,
+-- но может разделять похожие предметы.
+local MATCH_NBT = false
+
+------------------------------------------------------------
+-- СИСТЕМА
+------------------------------------------------------------
+
+local serialize = textutils.serialise or textutils.serialize
+local unserialize = textutils.unserialise or textutils.unserialize
+
+local template = {
+  version = 2,
+  saved_at = "never",
+  match_nbt = MATCH_NBT,
+  routes = {},
+  chests = {},
+}
+
+local autoSort = true
+local lastStatus = "Готово"
+local lastMoved = 0
+local lastUnknown = 0
+local lastFull = 0
+
+local monitor = peripheral.find("monitor")
+local monitorName = nil
+
+if monitor then
+  monitorName = peripheral.getName(monitor)
+  pcall(function()
+    monitor.setTextScale(0.5)
+  end)
+end
+
+local screen = monitor or term.current()
+
+local function isInventory(name)
+  local p = peripheral.wrap(name)
+  return type(p) == "table"
+    and type(p.list) == "function"
+    and type(p.pushItems) == "function"
+    and type(p.size) == "function"
+end
+
+local function exists(name)
+  return name and peripheral.wrap(name) ~= nil
+end
+
+local function itemKey(item)
+  if MATCH_NBT and item.nbt then
+    return item.name .. "|" .. item.nbt
+  end
+
+  return item.name
+end
+
+local function addUnique(list, value)
+  for _, v in ipairs(list) do
+    if v == value then
+      return
+    end
+  end
+
+  table.insert(list, value)
+end
+
+local function loadTemplate()
+  if not fs.exists(TEMPLATE_FILE) then
+    return
+  end
+
+  local f = fs.open(TEMPLATE_FILE, "r")
+  if not f then
+    return
+  end
+
+  local raw = f.readAll()
+  f.close()
+
+  local data = unserialize(raw)
+  if type(data) == "table" and type(data.routes) == "table" then
+    template = data
+    MATCH_NBT = data.match_nbt or false
+    lastStatus = "Шаблон загружен"
+  else
+    lastStatus = "Файл шаблона повреждён"
+  end
+end
+
+local function saveTemplate()
+  local f = fs.open(TEMPLATE_FILE, "w")
+  if not f then
+    lastStatus = "Не могу записать шаблон"
+    return false
+  end
+
+  f.write(serialize(template))
+  f.close()
+  return true
+end
+
+local function getStorageChests()
+  local result = {}
+
+  if #STORAGE_CHESTS > 0 then
+    for _, name in ipairs(STORAGE_CHESTS) do
+      if name ~= INPUT_CHEST and name ~= UNSORTED_CHEST and isInventory(name) then
+        table.insert(result, name)
+      end
+    end
+
+    return result
+  end
+
+  for _, name in ipairs(peripheral.getNames()) do
+    if name ~= INPUT_CHEST
+      and name ~= UNSORTED_CHEST
+      and name ~= monitorName
+      and isInventory(name)
+    then
+      table.insert(result, name)
+    end
+  end
+
+  table.sort(result)
+  return result
+end
+
+local function countRoutes()
+  local n = 0
+  for _ in pairs(template.routes or {}) do
+    n = n + 1
+  end
+  return n
+end
+
+local function saveChestState()
+  local chests = getStorageChests()
+  local routes = {}
+  local snapshot = {}
+  local itemCount = 0
+
+  for _, chestName in ipairs(chests) do
+    local chest = peripheral.wrap(chestName)
+    snapshot[chestName] = {}
+
+    for slot, item in pairs(chest.list()) do
+      local key = itemKey(item)
+
+      routes[key] = routes[key] or {}
+      addUnique(routes[key], chestName)
+
+      snapshot[chestName][key] = snapshot[chestName][key] or {
+        name = item.name,
+        nbt = item.nbt,
+        count = 0,
+        slots = {},
+      }
+
+      snapshot[chestName][key].count = snapshot[chestName][key].count + item.count
+      table.insert(snapshot[chestName][key].slots, slot)
+
+      itemCount = itemCount + 1
+    end
+  end
+
+  template = {
+    version = 2,
+    saved_at = os.date("%Y-%m-%d %H:%M:%S"),
+    match_nbt = MATCH_NBT,
+    routes = routes,
+    chests = snapshot,
+  }
+
+  if saveTemplate() then
+    lastStatus = "Шаблон сохранён: " .. tostring(countRoutes()) .. " типов"
+  end
+end
+
+local function pushToTargets(input, slot, item, targets)
+  local remaining = item.count
+  local moved = 0
+
+  for _, targetName in ipairs(targets) do
+    if remaining <= 0 then
+      break
+    end
+
+    if targetName ~= INPUT_CHEST and exists(targetName) then
+      local ok, amount = pcall(function()
+        return input.pushItems(targetName, slot, remaining)
+      end)
+
+      if ok and type(amount) == "number" and amount > 0 then
+        moved = moved + amount
+        remaining = remaining - amount
+      end
+    end
+  end
+
+  return moved, remaining
+end
+
+local function sortOnce()
+  if not exists(INPUT_CHEST) then
+    lastStatus = "Не найден входной сундук: " .. INPUT_CHEST
+    return
+  end
+
+  if not template.routes or countRoutes() == 0 then
+    lastStatus = "Нет шаблона. Сначала нажми 'Сохранить шаблон'"
+    return
+  end
+
+  local input = peripheral.wrap(INPUT_CHEST)
+  local movedTotal = 0
+  local unknownTotal = 0
+  local fullTotal = 0
+
+  local items = input.list()
+
+  for slot, item in pairs(items) do
+    local key = itemKey(item)
+    local targets = template.routes[key]
+
+    if targets and #targets > 0 then
+      local moved, remaining = pushToTargets(input, slot, item, targets)
+
+      movedTotal = movedTotal + moved
+
+      if remaining > 0 then
+        fullTotal = fullTotal + remaining
+      end
+    else
+      unknownTotal = unknownTotal + item.count
+
+      if UNSORTED_CHEST and exists(UNSORTED_CHEST) then
+        local ok, amount = pcall(function()
+          return input.pushItems(UNSORTED_CHEST, slot, item.count)
+        end)
+
+        if ok and type(amount) == "number" then
+          movedTotal = movedTotal + amount
+          unknownTotal = unknownTotal - amount
+        end
+      end
+    end
+  end
+
+  lastMoved = movedTotal
+  lastUnknown = unknownTotal
+  lastFull = fullTotal
+
+  lastStatus = "Сортировка: +" .. movedTotal
+    .. " | неизвестно: " .. unknownTotal
+    .. " | не влезло: " .. fullTotal
+end
+
+------------------------------------------------------------
+-- UI
+------------------------------------------------------------
+
+local buttons = {
+  save = { x = 2, y = 3,  w = 24, h = 3, label = "Сохранить шаблон" },
+  sort = { x = 2, y = 7,  w = 24, h = 3, label = "Сортировать" },
+  auto = { x = 2, y = 11, w = 24, h = 3, label = "Авто: ON" },
+  exit = { x = 2, y = 15, w = 24, h = 3, label = "Выход" },
+}
+
+local function setBg(color)
+  if screen.setBackgroundColor then
+    pcall(function() screen.setBackgroundColor(color) end)
+  end
+end
+
+local function setFg(color)
+  if screen.setTextColor then
+    pcall(function() screen.setTextColor(color) end)
+  end
+end
+
+local function writeAt(x, y, text, fg, bg)
+  if fg then setFg(fg) end
+  if bg then setBg(bg) end
+  screen.setCursorPos(x, y)
+  screen.write(text)
+end
+
+local function clear()
+  setBg(colors.black)
+  setFg(colors.white)
+  screen.clear()
+  screen.setCursorPos(1, 1)
+end
+
+local function drawButton(btn, label, bg)
+  for yy = 0, btn.h - 1 do
+    writeAt(btn.x, btn.y + yy, string.rep(" ", btn.w), colors.white, bg)
+  end
+
+  local textX = btn.x + math.floor((btn.w - #label) / 2)
+  local textY = btn.y + math.floor(btn.h / 2)
+
+  if textX < btn.x then
+    textX = btn.x
+  end
+
+  writeAt(textX, textY, label, colors.white, bg)
+end
+
+local function draw()
+  clear()
+
+  writeAt(2, 1, "AUTO SORTER", colors.yellow, colors.black)
+
+  buttons.auto.label = autoSort and "Авто: ON" or "Авто: OFF"
+
+  drawButton(buttons.save, buttons.save.label, colors.blue)
+  drawButton(buttons.sort, buttons.sort.label, colors.green)
+  drawButton(buttons.auto, buttons.auto.label, autoSort and colors.lime or colors.gray)
+  drawButton(buttons.exit, buttons.exit.label, colors.red)
+
+  local y = 19
+  writeAt(2, y,     "Вход: " .. INPUT_CHEST, colors.white, colors.black)
+  writeAt(2, y + 1, "Шаблон: " .. tostring(countRoutes()) .. " типов", colors.white, colors.black)
+  writeAt(2, y + 2, "Статус:", colors.yellow, colors.black)
+  writeAt(2, y + 3, tostring(lastStatus), colors.white, colors.black)
+  writeAt(2, y + 4, "Moved: " .. lastMoved .. " Unknown: " .. lastUnknown, colors.lightGray, colors.black)
+
+  if not monitor then
+    writeAt(2, y + 6, "Клик мышкой по терминалу или Ctrl+T", colors.gray, colors.black)
+  end
+end
+
+local function inButton(btn, x, y)
+  return x >= btn.x
+    and x < btn.x + btn.w
+    and y >= btn.y
+    and y < btn.y + btn.h
+end
+
+local function handleClick(x, y)
+  if inButton(buttons.save, x, y) then
+    saveChestState()
+  elseif inButton(buttons.sort, x, y) then
+    sortOnce()
+  elseif inButton(buttons.auto, x, y) then
+    autoSort = not autoSort
+    lastStatus = autoSort and "Автосортировка включена" or "Автосортировка выключена"
+  elseif inButton(buttons.exit, x, y) then
+    clear()
+    error("Выход", 0)
+  end
+
+  draw()
+end
+
+------------------------------------------------------------
+-- START
+------------------------------------------------------------
+
+loadTemplate()
+draw()
+
+local timer = os.startTimer(SORT_EVERY)
+
+while true do
+  local event, a, b, c = os.pullEvent()
+
+  if event == "timer" and a == timer then
+    if autoSort then
+      sortOnce()
+      draw()
+    end
+
+    timer = os.startTimer(SORT_EVERY)
+
+  elseif event == "monitor_touch" then
+    local side = a
+    local x = b
+    local y = c
+
+    if not monitorName or side == monitorName then
+      handleClick(x, y)
+    end
+
+  elseif event == "mouse_click" and not monitor then
+    local x = b
+    local y = c
+    handleClick(x, y)
+
+  elseif event == "monitor_resize" or event == "term_resize" then
+    draw()
+  end
+end
