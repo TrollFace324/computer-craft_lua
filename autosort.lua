@@ -1,36 +1,27 @@
 -- autosort.lua
--- Auto sorting system for CC:Tweaked / ComputerCraft
+-- Auto sorter for CC:Tweaked / ComputerCraft
+-- Auto-detects all network inventories.
+-- Each chest has its own saved template.
 
 ------------------------------------------------------------
 -- SETTINGS
 ------------------------------------------------------------
 
--- Chest where you put all items for sorting.
--- Use command "peripherals" to find the name.
-local INPUT_CHEST = "minecraft:barrel_0"
+-- Leave nil to select input chest from the monitor UI.
+-- Example: local FIXED_INPUT_CHEST = "minecraft:barrel_0"
+local FIXED_INPUT_CHEST = nil
 
--- Optional chest for unknown items.
--- If nil, unknown items will stay in the input chest.
-local UNSORTED_CHEST = nil
--- Example:
--- local UNSORTED_CHEST = "minecraft:chest_12"
+-- Optional unknown-items chest.
+-- If nil, unknown items stay in the input chest.
+local FIXED_UNSORTED_CHEST = nil
 
--- If this list is empty, the program will use all connected inventories
--- except INPUT_CHEST and UNSORTED_CHEST.
-local STORAGE_CHESTS = {
-  -- "minecraft:chest_1",
-  -- "minecraft:chest_2",
-  -- "minecraft:barrel_3",
-}
-
--- Auto sort interval in seconds.
 local SORT_EVERY = 5
 
--- Template save file.
-local TEMPLATE_FILE = "autosort_template.tbl"
+local TEMPLATE_FILE = "autosort_templates.tbl"
+local CONFIG_FILE = "autosort_config.tbl"
 
--- false = match only item name, for example minecraft:diamond
--- true = match item name and NBT hash
+-- false = match only item name
+-- true = match item name + NBT hash
 local MATCH_NBT = false
 
 ------------------------------------------------------------
@@ -40,11 +31,15 @@ local MATCH_NBT = false
 local serialize = textutils.serialise or textutils.serialize
 local unserialize = textutils.unserialise or textutils.unserialize
 
+local config = {
+  inputChest = nil,
+  unsortedChest = nil,
+}
+
 local template = {
-  version = 2,
-  saved_at = "never",
+  version = 3,
   match_nbt = MATCH_NBT,
-  routes = {},
+  saved_at = "never",
   chests = {},
 }
 
@@ -53,6 +48,7 @@ local lastStatus = "Ready"
 local lastMoved = 0
 local lastUnknown = 0
 local lastFull = 0
+local selectedIndex = 1
 
 local monitor = peripheral.find("monitor")
 local monitorName = nil
@@ -66,16 +62,33 @@ end
 
 local screen = monitor or term.current()
 
-local function isInventory(name)
-  local p = peripheral.wrap(name)
-  return type(p) == "table"
-    and type(p.list) == "function"
-    and type(p.pushItems) == "function"
-    and type(p.size) == "function"
+------------------------------------------------------------
+-- BASIC HELPERS
+------------------------------------------------------------
+
+local function getTimeString()
+  local ok, result = pcall(function()
+    return os.date("%Y-%m-%d %H:%M:%S")
+  end)
+
+  if ok and result then
+    return result
+  end
+
+  return tostring(os.time())
 end
 
 local function exists(name)
   return name and peripheral.wrap(name) ~= nil
+end
+
+local function isInventory(name)
+  local p = peripheral.wrap(name)
+
+  return type(p) == "table"
+    and type(p.list) == "function"
+    and type(p.pushItems) == "function"
+    and type(p.size) == "function"
 end
 
 local function itemKey(item)
@@ -96,12 +109,66 @@ local function addUnique(list, value)
   table.insert(list, value)
 end
 
-local function countRoutes()
-  local n = 0
-  for _ in pairs(template.routes or {}) do
-    n = n + 1
+local function shortName(name, maxLen)
+  maxLen = maxLen or 34
+
+  if not name then
+    return "none"
   end
-  return n
+
+  if #name <= maxLen then
+    return name
+  end
+
+  return string.sub(name, 1, maxLen - 3) .. "..."
+end
+
+------------------------------------------------------------
+-- FILES
+------------------------------------------------------------
+
+local function saveConfig()
+  local f = fs.open(CONFIG_FILE, "w")
+  if not f then
+    lastStatus = "Cannot save config"
+    return false
+  end
+
+  f.write(serialize(config))
+  f.close()
+  return true
+end
+
+local function loadConfig()
+  if not fs.exists(CONFIG_FILE) then
+    return
+  end
+
+  local f = fs.open(CONFIG_FILE, "r")
+  if not f then
+    return
+  end
+
+  local raw = f.readAll()
+  f.close()
+
+  local data = unserialize(raw)
+
+  if type(data) == "table" then
+    config = data
+  end
+end
+
+local function saveTemplate()
+  local f = fs.open(TEMPLATE_FILE, "w")
+  if not f then
+    lastStatus = "Cannot save templates"
+    return false
+  end
+
+  f.write(serialize(template))
+  f.close()
+  return true
 end
 
 local function loadTemplate()
@@ -119,46 +186,24 @@ local function loadTemplate()
 
   local data = unserialize(raw)
 
-  if type(data) == "table" and type(data.routes) == "table" then
+  if type(data) == "table" and type(data.chests) == "table" then
     template = data
     MATCH_NBT = data.match_nbt or false
-    lastStatus = "Template loaded"
+    lastStatus = "Templates loaded"
   else
     lastStatus = "Template file broken"
   end
 end
 
-local function saveTemplate()
-  local f = fs.open(TEMPLATE_FILE, "w")
-  if not f then
-    lastStatus = "Cannot save template"
-    return false
-  end
+------------------------------------------------------------
+-- INVENTORY DISCOVERY
+------------------------------------------------------------
 
-  f.write(serialize(template))
-  f.close()
-  return true
-end
-
-local function getStorageChests()
+local function getAllInventories()
   local result = {}
 
-  if #STORAGE_CHESTS > 0 then
-    for _, name in ipairs(STORAGE_CHESTS) do
-      if name ~= INPUT_CHEST and name ~= UNSORTED_CHEST and isInventory(name) then
-        table.insert(result, name)
-      end
-    end
-
-    return result
-  end
-
   for _, name in ipairs(peripheral.getNames()) do
-    if name ~= INPUT_CHEST
-      and name ~= UNSORTED_CHEST
-      and name ~= monitorName
-      and isInventory(name)
-    then
+    if name ~= monitorName and isInventory(name) then
       table.insert(result, name)
     end
   end
@@ -167,60 +212,197 @@ local function getStorageChests()
   return result
 end
 
-local function getTimeString()
-  local ok, result = pcall(function()
-    return os.date("%Y-%m-%d %H:%M:%S")
-  end)
+local function getSelectedChest()
+  local inventories = getAllInventories()
 
-  if ok and result then
-    return result
+  if #inventories == 0 then
+    selectedIndex = 1
+    return nil
   end
 
-  return tostring(os.time())
+  if selectedIndex < 1 then
+    selectedIndex = 1
+  end
+
+  if selectedIndex > #inventories then
+    selectedIndex = #inventories
+  end
+
+  return inventories[selectedIndex]
 end
 
-local function saveChestState()
-  local chests = getStorageChests()
-  local routes = {}
-  local snapshot = {}
-  local itemCount = 0
+local function getStorageChests()
+  local result = {}
+  local inventories = getAllInventories()
 
-  for _, chestName in ipairs(chests) do
-    local chest = peripheral.wrap(chestName)
-    snapshot[chestName] = {}
-
-    for slot, item in pairs(chest.list()) do
-      local key = itemKey(item)
-
-      routes[key] = routes[key] or {}
-      addUnique(routes[key], chestName)
-
-      snapshot[chestName][key] = snapshot[chestName][key] or {
-        name = item.name,
-        nbt = item.nbt,
-        count = 0,
-        slots = {},
-      }
-
-      snapshot[chestName][key].count = snapshot[chestName][key].count + item.count
-      table.insert(snapshot[chestName][key].slots, slot)
-
-      itemCount = itemCount + 1
+  for _, name in ipairs(inventories) do
+    if name ~= config.inputChest and name ~= config.unsortedChest then
+      table.insert(result, name)
     end
   end
 
-  template = {
-    version = 2,
-    saved_at = getTimeString(),
-    match_nbt = MATCH_NBT,
-    routes = routes,
-    chests = snapshot,
-  }
+  return result
+end
+
+local function countChestTemplates()
+  local n = 0
+
+  for _ in pairs(template.chests or {}) do
+    n = n + 1
+  end
+
+  return n
+end
+
+local function countItemTemplates()
+  local n = 0
+
+  for _, chestTemplate in pairs(template.chests or {}) do
+    if type(chestTemplate.items) == "table" then
+      for _ in pairs(chestTemplate.items) do
+        n = n + 1
+      end
+    end
+  end
+
+  return n
+end
+
+local function countUniqueRoutes()
+  local seen = {}
+
+  for _, chestTemplate in pairs(template.chests or {}) do
+    if type(chestTemplate.items) == "table" then
+      for key in pairs(chestTemplate.items) do
+        seen[key] = true
+      end
+    end
+  end
+
+  local n = 0
+
+  for _ in pairs(seen) do
+    n = n + 1
+  end
+
+  return n
+end
+
+------------------------------------------------------------
+-- TEMPLATE LOGIC
+------------------------------------------------------------
+
+local function scanChestItems(chestName)
+  local chest = peripheral.wrap(chestName)
+  local items = {}
+
+  if not chest then
+    return items
+  end
+
+  for _, item in pairs(chest.list()) do
+    local key = itemKey(item)
+
+    if not items[key] then
+      items[key] = {
+        name = item.name,
+        nbt = item.nbt,
+        count = 0,
+      }
+    end
+
+    items[key].count = items[key].count + item.count
+  end
+
+  return items
+end
+
+local function saveSamples(clearFirst)
+  if not config.inputChest then
+    lastStatus = "Set input chest first"
+    return
+  end
+
+  if clearFirst then
+    template.chests = {}
+  end
+
+  local storageChests = getStorageChests()
+  local added = 0
+  local chestCount = 0
+
+  for _, chestName in ipairs(storageChests) do
+    local scanned = scanChestItems(chestName)
+    local hasItems = false
+
+    for _ in pairs(scanned) do
+      hasItems = true
+      break
+    end
+
+    if hasItems or template.chests[chestName] then
+      template.chests[chestName] = template.chests[chestName] or {
+        items = {},
+        saved_at = "never",
+      }
+
+      template.chests[chestName].items = template.chests[chestName].items or {}
+
+      for key, data in pairs(scanned) do
+        if not template.chests[chestName].items[key] then
+          added = added + 1
+        end
+
+        template.chests[chestName].items[key] = data
+      end
+
+      template.chests[chestName].saved_at = getTimeString()
+      chestCount = chestCount + 1
+    end
+  end
+
+  template.version = 3
+  template.match_nbt = MATCH_NBT
+  template.saved_at = getTimeString()
 
   if saveTemplate() then
-    lastStatus = "Template saved: " .. tostring(countRoutes()) .. " items"
+    if clearFirst then
+      lastStatus = "Rebuilt: " .. countItemTemplates() .. " samples"
+    else
+      lastStatus = "Saved samples: +" .. added
+    end
   end
 end
+
+local function buildRoutes()
+  local routes = {}
+  local chestNames = {}
+
+  for chestName in pairs(template.chests or {}) do
+    table.insert(chestNames, chestName)
+  end
+
+  table.sort(chestNames)
+
+  for _, chestName in ipairs(chestNames) do
+    local chestTemplate = template.chests[chestName]
+
+    if chestName ~= config.inputChest and exists(chestName) then
+      if type(chestTemplate.items) == "table" then
+        for key in pairs(chestTemplate.items) do
+          routes[key] = routes[key] or {}
+          addUnique(routes[key], chestName)
+        end
+      end
+    end
+  end
+
+  return routes
+end
+
+------------------------------------------------------------
+-- SORTING
+------------------------------------------------------------
 
 local function pushToTargets(input, slot, item, targets)
   local remaining = item.count
@@ -231,7 +413,7 @@ local function pushToTargets(input, slot, item, targets)
       break
     end
 
-    if targetName ~= INPUT_CHEST and exists(targetName) then
+    if targetName ~= config.inputChest and exists(targetName) then
       local ok, amount = pcall(function()
         return input.pushItems(targetName, slot, remaining)
       end)
@@ -247,17 +429,24 @@ local function pushToTargets(input, slot, item, targets)
 end
 
 local function sortOnce()
-  if not exists(INPUT_CHEST) then
+  if not config.inputChest then
+    lastStatus = "No input chest selected"
+    return
+  end
+
+  if not exists(config.inputChest) then
     lastStatus = "Input chest not found"
     return
   end
 
-  if not template.routes or countRoutes() == 0 then
-    lastStatus = "No template. Press SAVE first"
+  if countItemTemplates() == 0 then
+    lastStatus = "No templates. Save samples first"
     return
   end
 
-  local input = peripheral.wrap(INPUT_CHEST)
+  local routes = buildRoutes()
+  local input = peripheral.wrap(config.inputChest)
+
   local movedTotal = 0
   local unknownTotal = 0
   local fullTotal = 0
@@ -266,7 +455,7 @@ local function sortOnce()
 
   for slot, item in pairs(items) do
     local key = itemKey(item)
-    local targets = template.routes[key]
+    local targets = routes[key]
 
     if targets and #targets > 0 then
       local moved, remaining = pushToTargets(input, slot, item, targets)
@@ -279,9 +468,9 @@ local function sortOnce()
     else
       unknownTotal = unknownTotal + item.count
 
-      if UNSORTED_CHEST and exists(UNSORTED_CHEST) then
+      if config.unsortedChest and exists(config.unsortedChest) then
         local ok, amount = pcall(function()
-          return input.pushItems(UNSORTED_CHEST, slot, item.count)
+          return input.pushItems(config.unsortedChest, slot, item.count)
         end)
 
         if ok and type(amount) == "number" then
@@ -306,10 +495,16 @@ end
 ------------------------------------------------------------
 
 local buttons = {
-  save = { x = 2, y = 3,  w = 24, h = 3, label = "SAVE TEMPLATE" },
-  sort = { x = 2, y = 7,  w = 24, h = 3, label = "SORT NOW" },
-  auto = { x = 2, y = 11, w = 24, h = 3, label = "AUTO: ON" },
-  exit = { x = 2, y = 15, w = 24, h = 3, label = "EXIT" },
+  save =   { x = 2,  y = 3,  w = 20, h = 3, label = "SAVE SAMPLES" },
+  rebuild ={ x = 24, y = 3,  w = 20, h = 3, label = "REBUILD ALL" },
+
+  sort =   { x = 2,  y = 7,  w = 20, h = 3, label = "SORT NOW" },
+  auto =   { x = 24, y = 7,  w = 20, h = 3, label = "AUTO: ON" },
+
+  next =   { x = 2,  y = 11, w = 20, h = 3, label = "NEXT CHEST" },
+  use =    { x = 24, y = 11, w = 20, h = 3, label = "USE AS INPUT" },
+
+  exit =   { x = 2,  y = 15, w = 20, h = 3, label = "EXIT" },
 }
 
 local function setBg(color)
@@ -360,26 +555,42 @@ end
 local function draw()
   clear()
 
-  writeAt(2, 1, "AUTO SORTER", colors.yellow, colors.black)
+  local inventories = getAllInventories()
+  local selected = getSelectedChest()
+
+  writeAt(2, 1, "AUTO SORTER V3", colors.yellow, colors.black)
 
   buttons.auto.label = autoSort and "AUTO: ON" or "AUTO: OFF"
 
   drawButton(buttons.save, buttons.save.label, colors.blue)
+  drawButton(buttons.rebuild, buttons.rebuild.label, colors.orange)
+
   drawButton(buttons.sort, buttons.sort.label, colors.green)
   drawButton(buttons.auto, buttons.auto.label, autoSort and colors.lime or colors.gray)
+
+  drawButton(buttons.next, buttons.next.label, colors.purple)
+  drawButton(buttons.use, buttons.use.label, colors.cyan)
+
   drawButton(buttons.exit, buttons.exit.label, colors.red)
 
   local y = 19
 
-  writeAt(2, y,     "Input: " .. INPUT_CHEST, colors.white, colors.black)
-  writeAt(2, y + 1, "Template: " .. tostring(countRoutes()) .. " items", colors.white, colors.black)
-  writeAt(2, y + 2, "Status:", colors.yellow, colors.black)
-  writeAt(2, y + 3, tostring(lastStatus), colors.white, colors.black)
-  writeAt(2, y + 4, "Moved: " .. lastMoved .. " Unknown: " .. lastUnknown, colors.lightGray, colors.black)
-  writeAt(2, y + 5, "Full: " .. lastFull, colors.lightGray, colors.black)
+  writeAt(2, y,     "Detected chests: " .. tostring(#inventories), colors.white, colors.black)
+  writeAt(2, y + 1, "Selected: " .. shortName(selected, 34), colors.white, colors.black)
+  writeAt(2, y + 2, "Input: " .. shortName(config.inputChest, 34), colors.white, colors.black)
+
+  writeAt(2, y + 4, "Chest templates: " .. tostring(countChestTemplates()), colors.lightGray, colors.black)
+  writeAt(2, y + 5, "Item samples: " .. tostring(countItemTemplates()), colors.lightGray, colors.black)
+  writeAt(2, y + 6, "Unique items: " .. tostring(countUniqueRoutes()), colors.lightGray, colors.black)
+
+  writeAt(2, y + 8, "Status:", colors.yellow, colors.black)
+  writeAt(2, y + 9, shortName(tostring(lastStatus), 44), colors.white, colors.black)
+
+  writeAt(2, y + 11, "Moved: " .. lastMoved .. " Unknown: " .. lastUnknown, colors.lightGray, colors.black)
+  writeAt(2, y + 12, "Full: " .. lastFull, colors.lightGray, colors.black)
 
   if not monitor then
-    writeAt(2, y + 7, "Use mouse click or Ctrl+T", colors.gray, colors.black)
+    writeAt(2, y + 14, "Use mouse click or Ctrl+T", colors.gray, colors.black)
   end
 end
 
@@ -392,12 +603,45 @@ end
 
 local function handleClick(x, y)
   if inButton(buttons.save, x, y) then
-    saveChestState()
+    saveSamples(false)
+
+  elseif inButton(buttons.rebuild, x, y) then
+    saveSamples(true)
+
   elseif inButton(buttons.sort, x, y) then
     sortOnce()
+
   elseif inButton(buttons.auto, x, y) then
     autoSort = not autoSort
     lastStatus = autoSort and "Auto sort enabled" or "Auto sort disabled"
+
+  elseif inButton(buttons.next, x, y) then
+    local inventories = getAllInventories()
+
+    if #inventories == 0 then
+      selectedIndex = 1
+      lastStatus = "No chests detected"
+    else
+      selectedIndex = selectedIndex + 1
+
+      if selectedIndex > #inventories then
+        selectedIndex = 1
+      end
+
+      lastStatus = "Selected next chest"
+    end
+
+  elseif inButton(buttons.use, x, y) then
+    local selected = getSelectedChest()
+
+    if selected then
+      config.inputChest = selected
+      saveConfig()
+      lastStatus = "Input chest saved"
+    else
+      lastStatus = "No chest selected"
+    end
+
   elseif inButton(buttons.exit, x, y) then
     clear()
     error("Exit", 0)
@@ -410,7 +654,17 @@ end
 -- START
 ------------------------------------------------------------
 
+loadConfig()
 loadTemplate()
+
+if FIXED_INPUT_CHEST then
+  config.inputChest = FIXED_INPUT_CHEST
+end
+
+if FIXED_UNSORTED_CHEST then
+  config.unsortedChest = FIXED_UNSORTED_CHEST
+end
+
 draw()
 
 local timer = os.startTimer(SORT_EVERY)
