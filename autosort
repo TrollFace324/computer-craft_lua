@@ -1,43 +1,40 @@
 -- autosort.lua
--- Автосортировка для CC:Tweaked / ComputerCraft
--- Нужны: компьютер, wired modem, сундуки/бочки/шалкеры как peripherals, желательно Advanced Monitor.
+-- Auto sorting system for CC:Tweaked / ComputerCraft
 
 ------------------------------------------------------------
--- НАСТРОЙКИ
+-- SETTINGS
 ------------------------------------------------------------
 
--- Сундук, куда ты складываешь ВСЕ предметы для сортировки.
--- Узнать имя можно командой: peripherals
+-- Chest where you put all items for sorting.
+-- Use command "peripherals" to find the name.
 local INPUT_CHEST = "minecraft:barrel_0"
 
--- Необязательно: сундук для неизвестных предметов.
--- Если nil, неизвестные предметы останутся во входном сундуке.
+-- Optional chest for unknown items.
+-- If nil, unknown items will stay in the input chest.
 local UNSORTED_CHEST = nil
--- пример:
+-- Example:
 -- local UNSORTED_CHEST = "minecraft:chest_12"
 
--- Если список пустой, программа сама возьмёт все инвентари,
--- кроме INPUT_CHEST и UNSORTED_CHEST.
--- Лучше оставить пустым, если все сундуки в сети — это сортировка.
+-- If this list is empty, the program will use all connected inventories
+-- except INPUT_CHEST and UNSORTED_CHEST.
 local STORAGE_CHESTS = {
   -- "minecraft:chest_1",
   -- "minecraft:chest_2",
   -- "minecraft:barrel_3",
 }
 
--- Через сколько секунд делать автосортировку.
+-- Auto sort interval in seconds.
 local SORT_EVERY = 5
 
--- Файл, куда сохраняется шаблон.
+-- Template save file.
 local TEMPLATE_FILE = "autosort_template.tbl"
 
--- false = сортировать только по item.name, например minecraft:diamond.
--- true = учитывать NBT-хэш. Полезно для книг, зелий, кастомных предметов,
--- но может разделять похожие предметы.
+-- false = match only item name, for example minecraft:diamond
+-- true = match item name and NBT hash
 local MATCH_NBT = false
 
 ------------------------------------------------------------
--- СИСТЕМА
+-- SYSTEM
 ------------------------------------------------------------
 
 local serialize = textutils.serialise or textutils.serialize
@@ -52,7 +49,7 @@ local template = {
 }
 
 local autoSort = true
-local lastStatus = "Готово"
+local lastStatus = "Ready"
 local lastMoved = 0
 local lastUnknown = 0
 local lastFull = 0
@@ -99,6 +96,14 @@ local function addUnique(list, value)
   table.insert(list, value)
 end
 
+local function countRoutes()
+  local n = 0
+  for _ in pairs(template.routes or {}) do
+    n = n + 1
+  end
+  return n
+end
+
 local function loadTemplate()
   if not fs.exists(TEMPLATE_FILE) then
     return
@@ -113,19 +118,20 @@ local function loadTemplate()
   f.close()
 
   local data = unserialize(raw)
+
   if type(data) == "table" and type(data.routes) == "table" then
     template = data
     MATCH_NBT = data.match_nbt or false
-    lastStatus = "Шаблон загружен"
+    lastStatus = "Template loaded"
   else
-    lastStatus = "Файл шаблона повреждён"
+    lastStatus = "Template file broken"
   end
 end
 
 local function saveTemplate()
   local f = fs.open(TEMPLATE_FILE, "w")
   if not f then
-    lastStatus = "Не могу записать шаблон"
+    lastStatus = "Cannot save template"
     return false
   end
 
@@ -161,12 +167,16 @@ local function getStorageChests()
   return result
 end
 
-local function countRoutes()
-  local n = 0
-  for _ in pairs(template.routes or {}) do
-    n = n + 1
+local function getTimeString()
+  local ok, result = pcall(function()
+    return os.date("%Y-%m-%d %H:%M:%S")
+  end)
+
+  if ok and result then
+    return result
   end
-  return n
+
+  return tostring(os.time())
 end
 
 local function saveChestState()
@@ -201,14 +211,14 @@ local function saveChestState()
 
   template = {
     version = 2,
-    saved_at = os.date("%Y-%m-%d %H:%M:%S"),
+    saved_at = getTimeString(),
     match_nbt = MATCH_NBT,
     routes = routes,
     chests = snapshot,
   }
 
   if saveTemplate() then
-    lastStatus = "Шаблон сохранён: " .. tostring(countRoutes()) .. " типов"
+    lastStatus = "Template saved: " .. tostring(countRoutes()) .. " items"
   end
 end
 
@@ -238,12 +248,12 @@ end
 
 local function sortOnce()
   if not exists(INPUT_CHEST) then
-    lastStatus = "Не найден входной сундук: " .. INPUT_CHEST
+    lastStatus = "Input chest not found"
     return
   end
 
   if not template.routes or countRoutes() == 0 then
-    lastStatus = "Нет шаблона. Сначала нажми 'Сохранить шаблон'"
+    lastStatus = "No template. Press SAVE first"
     return
   end
 
@@ -286,9 +296,9 @@ local function sortOnce()
   lastUnknown = unknownTotal
   lastFull = fullTotal
 
-  lastStatus = "Сортировка: +" .. movedTotal
-    .. " | неизвестно: " .. unknownTotal
-    .. " | не влезло: " .. fullTotal
+  lastStatus = "Sorted: +" .. movedTotal
+    .. " | unknown: " .. unknownTotal
+    .. " | full: " .. fullTotal
 end
 
 ------------------------------------------------------------
@@ -296,21 +306,25 @@ end
 ------------------------------------------------------------
 
 local buttons = {
-  save = { x = 2, y = 3,  w = 24, h = 3, label = "Сохранить шаблон" },
-  sort = { x = 2, y = 7,  w = 24, h = 3, label = "Сортировать" },
-  auto = { x = 2, y = 11, w = 24, h = 3, label = "Авто: ON" },
-  exit = { x = 2, y = 15, w = 24, h = 3, label = "Выход" },
+  save = { x = 2, y = 3,  w = 24, h = 3, label = "SAVE TEMPLATE" },
+  sort = { x = 2, y = 7,  w = 24, h = 3, label = "SORT NOW" },
+  auto = { x = 2, y = 11, w = 24, h = 3, label = "AUTO: ON" },
+  exit = { x = 2, y = 15, w = 24, h = 3, label = "EXIT" },
 }
 
 local function setBg(color)
   if screen.setBackgroundColor then
-    pcall(function() screen.setBackgroundColor(color) end)
+    pcall(function()
+      screen.setBackgroundColor(color)
+    end)
   end
 end
 
 local function setFg(color)
   if screen.setTextColor then
-    pcall(function() screen.setTextColor(color) end)
+    pcall(function()
+      screen.setTextColor(color)
+    end)
   end
 end
 
@@ -348,7 +362,7 @@ local function draw()
 
   writeAt(2, 1, "AUTO SORTER", colors.yellow, colors.black)
 
-  buttons.auto.label = autoSort and "Авто: ON" or "Авто: OFF"
+  buttons.auto.label = autoSort and "AUTO: ON" or "AUTO: OFF"
 
   drawButton(buttons.save, buttons.save.label, colors.blue)
   drawButton(buttons.sort, buttons.sort.label, colors.green)
@@ -356,14 +370,16 @@ local function draw()
   drawButton(buttons.exit, buttons.exit.label, colors.red)
 
   local y = 19
-  writeAt(2, y,     "Вход: " .. INPUT_CHEST, colors.white, colors.black)
-  writeAt(2, y + 1, "Шаблон: " .. tostring(countRoutes()) .. " типов", colors.white, colors.black)
-  writeAt(2, y + 2, "Статус:", colors.yellow, colors.black)
+
+  writeAt(2, y,     "Input: " .. INPUT_CHEST, colors.white, colors.black)
+  writeAt(2, y + 1, "Template: " .. tostring(countRoutes()) .. " items", colors.white, colors.black)
+  writeAt(2, y + 2, "Status:", colors.yellow, colors.black)
   writeAt(2, y + 3, tostring(lastStatus), colors.white, colors.black)
   writeAt(2, y + 4, "Moved: " .. lastMoved .. " Unknown: " .. lastUnknown, colors.lightGray, colors.black)
+  writeAt(2, y + 5, "Full: " .. lastFull, colors.lightGray, colors.black)
 
   if not monitor then
-    writeAt(2, y + 6, "Клик мышкой по терминалу или Ctrl+T", colors.gray, colors.black)
+    writeAt(2, y + 7, "Use mouse click or Ctrl+T", colors.gray, colors.black)
   end
 end
 
@@ -381,10 +397,10 @@ local function handleClick(x, y)
     sortOnce()
   elseif inButton(buttons.auto, x, y) then
     autoSort = not autoSort
-    lastStatus = autoSort and "Автосортировка включена" or "Автосортировка выключена"
+    lastStatus = autoSort and "Auto sort enabled" or "Auto sort disabled"
   elseif inButton(buttons.exit, x, y) then
     clear()
-    error("Выход", 0)
+    error("Exit", 0)
   end
 
   draw()
