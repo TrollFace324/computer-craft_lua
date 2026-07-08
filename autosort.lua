@@ -1,6 +1,5 @@
 -- autosort.lua
--- Auto sorter with unnamed chest groups.
--- Groups are named automatically: group_1, group_2, group_3...
+-- Fast infinite auto sorter with unnamed chest groups.
 -- Fixed input: carved_wood:barrel_0
 -- 3x3 monitor UI. SAVE button is on middle-left monitor block.
 
@@ -11,11 +10,13 @@
 local INPUT_CHEST = "carved_wood:barrel_0"
 
 local TEMPLATE_FILE = "autosort_template.tbl"
-local SORT_EVERY = 5
 local MATCH_NBT = false
 
--- Put chest peripheral names here.
--- Each list becomes group_X.
+-- Groups without names.
+-- Program will create: group_1, group_2, group_3...
+--
+-- If an item exists in any chest of group_1,
+-- that item may be placed into any chest of group_1.
 --
 -- Example:
 -- local CHEST_GROUPS = {
@@ -29,12 +30,6 @@ local MATCH_NBT = false
 --     "minecraft:barrel_4",
 --   },
 -- }
---
--- group_1 = chest_1 + chest_2
--- group_2 = barrel_3 + barrel_4
---
--- If one item is found in any chest of group_1, that item can go
--- into any chest of group_1.
 
 local CHEST_GROUPS = {
   {
@@ -48,7 +43,7 @@ local CHEST_GROUPS = {
   },
 }
 
--- true = all chests not listed above become solo groups automatically.
+-- true = chests not listed in CHEST_GROUPS become solo groups automatically.
 -- false = unlisted chests are ignored.
 local AUTO_ADD_UNGROUPED_CHESTS = true
 
@@ -60,17 +55,22 @@ local serialize = textutils.serialise or textutils.serialize
 local unserialize = textutils.unserialise or textutils.unserialize
 
 local template = {
-  version = 9,
+  version = 10,
   match_nbt = MATCH_NBT,
   saved_at = "never",
   groups = {},
 }
+
+local routes = {}
 
 local lastStatus = "Ready"
 local lastMoved = 0
 local lastUnknown = 0
 local lastFull = 0
 local lastSaved = "never"
+local cycles = 0
+
+local needRedraw = true
 
 local monitor = peripheral.find("monitor")
 local monitorName = nil
@@ -161,6 +161,11 @@ local function tableSize(t)
   return n
 end
 
+local function yieldNow()
+  os.queueEvent("autosort_yield")
+  os.pullEvent("autosort_yield")
+end
+
 ------------------------------------------------------------
 -- FILES
 ------------------------------------------------------------
@@ -170,6 +175,7 @@ local function saveTemplateFile()
 
   if not f then
     lastStatus = "Cannot save file"
+    needRedraw = true
     return false
   end
 
@@ -354,9 +360,47 @@ local function scanGroup(group)
   return items
 end
 
+local function rebuildRoutes()
+  local newRoutes = {}
+  local groupNames = {}
+
+  for groupName in pairs(template.groups or {}) do
+    table.insert(groupNames, groupName)
+  end
+
+  table.sort(groupNames)
+
+  for _, groupName in ipairs(groupNames) do
+    local groupData = template.groups[groupName]
+
+    if type(groupData.items) == "table" and type(groupData.chests) == "table" then
+      local availableChests = {}
+
+      for _, chestName in ipairs(groupData.chests) do
+        if chestName ~= INPUT_CHEST and exists(chestName) then
+          table.insert(availableChests, chestName)
+        end
+      end
+
+      -- One item can be in several templates/groups.
+      -- Then all chests from all those groups become possible targets.
+      for key in pairs(groupData.items) do
+        newRoutes[key] = newRoutes[key] or {}
+
+        for _, chestName in ipairs(availableChests) do
+          addUnique(newRoutes[key], chestName)
+        end
+      end
+    end
+  end
+
+  routes = newRoutes
+end
+
 local function saveTemplate()
   if not exists(INPUT_CHEST) then
     lastStatus = "Input not found"
+    needRedraw = true
     return
   end
 
@@ -386,7 +430,7 @@ local function saveTemplate()
   end
 
   template = {
-    version = 9,
+    version = 10,
     match_nbt = MATCH_NBT,
     saved_at = getTimeString(),
     groups = newGroups,
@@ -395,50 +439,18 @@ local function saveTemplate()
   lastSaved = template.saved_at
 
   if saveTemplateFile() then
+    rebuildRoutes()
     lastStatus = "Saved: " .. sampleCount .. " samples"
   end
-end
 
-local function buildRoutes()
-  local routes = {}
-  local groupNames = {}
-
-  for groupName in pairs(template.groups or {}) do
-    table.insert(groupNames, groupName)
-  end
-
-  table.sort(groupNames)
-
-  for _, groupName in ipairs(groupNames) do
-    local groupData = template.groups[groupName]
-
-    if type(groupData.items) == "table" and type(groupData.chests) == "table" then
-      local availableChests = {}
-
-      for _, chestName in ipairs(groupData.chests) do
-        if chestName ~= INPUT_CHEST and exists(chestName) then
-          table.insert(availableChests, chestName)
-        end
-      end
-
-      for key in pairs(groupData.items) do
-        routes[key] = routes[key] or {}
-
-        for _, chestName in ipairs(availableChests) do
-          addUnique(routes[key], chestName)
-        end
-      end
-    end
-  end
-
-  return routes
+  needRedraw = true
 end
 
 ------------------------------------------------------------
 -- SORTING
 ------------------------------------------------------------
 
-local function pushToTargets(input, slot, item, targets)
+local function tryPushToTargets(input, slot, item, targets)
   local remaining = item.count
   local moved = 0
 
@@ -462,7 +474,7 @@ local function pushToTargets(input, slot, item, targets)
   return moved, remaining
 end
 
-local function sortOnce()
+local function sortOnePass()
   if not exists(INPUT_CHEST) then
     lastStatus = "Input not found"
     return
@@ -474,7 +486,10 @@ local function sortOnce()
   end
 
   local input = peripheral.wrap(INPUT_CHEST)
-  local routes = buildRoutes()
+  if not input then
+    lastStatus = "Input wrap failed"
+    return
+  end
 
   local movedTotal = 0
   local unknownTotal = 0
@@ -485,15 +500,17 @@ local function sortOnce()
     local targets = routes[key]
 
     if targets and #targets > 0 then
-      local moved, remaining = pushToTargets(input, slot, item, targets)
+      local moved, remaining = tryPushToTargets(input, slot, item, targets)
 
       movedTotal = movedTotal + moved
 
+      -- If all target chests are full, item is skipped and stays in input.
       if remaining > 0 then
         fullTotal = fullTotal + remaining
       end
     else
-      -- Unknown items stay in input chest.
+      -- No template for this item. Skip it.
+      -- It stays in input chest.
       unknownTotal = unknownTotal + item.count
     end
   end
@@ -501,6 +518,7 @@ local function sortOnce()
   lastMoved = movedTotal
   lastUnknown = unknownTotal
   lastFull = fullTotal
+  cycles = cycles + 1
 
   lastStatus = "M:" .. movedTotal .. " U:" .. unknownTotal .. " F:" .. fullTotal
 end
@@ -623,7 +641,7 @@ local function draw()
 
   -- Top-left
   writeAt(2, 1, "SORTER", colors.yellow, colors.black)
-  writeAt(2, 2, "AUTO ON", colors.lime, colors.black)
+  writeAt(2, 2, "FAST LOOP", colors.lime, colors.black)
   writeAt(2, 3, "S=SAVE", colors.gray, colors.black)
 
   -- Top-middle
@@ -654,6 +672,7 @@ local function draw()
   -- Bottom-left
   writeAt(2, rowH * 2 + 2, "STATUS", colors.yellow, colors.black)
   writeAt(2, rowH * 2 + 3, shortText(lastStatus, colW - 1), colors.white, colors.black)
+  writeAt(2, rowH * 2 + 4, "C:" .. tostring(cycles), colors.gray, colors.black)
 
   -- Bottom-middle
   writeAt(x2, rowH * 2 + 2, "LAST SAVE", colors.yellow, colors.black)
@@ -662,6 +681,8 @@ local function draw()
   -- Bottom-right
   writeAt(x3, rowH * 2 + 2, "FILE", colors.yellow, colors.black)
   writeAt(x3, rowH * 2 + 3, shortText(TEMPLATE_FILE, colW - 2), colors.lightGray, colors.black)
+
+  needRedraw = false
 end
 
 local function inButton(x, y)
@@ -681,39 +702,56 @@ local function handleClick(x, y)
 end
 
 ------------------------------------------------------------
+-- LOOPS
+------------------------------------------------------------
+
+local function sortLoop()
+  while true do
+    sortOnePass()
+
+    -- No sleep, no timer.
+    -- This only yields so ComputerCraft does not kill the program
+    -- and monitor/key events can still be processed.
+    yieldNow()
+  end
+end
+
+local function uiLoop()
+  while true do
+    if needRedraw then
+      draw()
+    end
+
+    local event, a, b, c = os.pullEvent()
+
+    if event == "monitor_touch" then
+      local x = b
+      local y = c
+      handleClick(x, y)
+
+    elseif event == "mouse_click" and not monitor then
+      local x = b
+      local y = c
+      handleClick(x, y)
+
+    elseif event == "key" then
+      if a == keys.s then
+        saveTemplate()
+        draw()
+      end
+
+    elseif event == "monitor_resize" or event == "term_resize" then
+      needRedraw = true
+    end
+  end
+end
+
+------------------------------------------------------------
 -- START
 ------------------------------------------------------------
 
 loadTemplateFile()
+rebuildRoutes()
 draw()
 
-local timer = os.startTimer(SORT_EVERY)
-
-while true do
-  local event, a, b, c = os.pullEvent()
-
-  if event == "timer" and a == timer then
-    sortOnce()
-    draw()
-    timer = os.startTimer(SORT_EVERY)
-
-  elseif event == "monitor_touch" then
-    local x = b
-    local y = c
-    handleClick(x, y)
-
-  elseif event == "mouse_click" and not monitor then
-    local x = b
-    local y = c
-    handleClick(x, y)
-
-  elseif event == "key" then
-    if a == keys.s then
-      saveTemplate()
-      draw()
-    end
-
-  elseif event == "monitor_resize" or event == "term_resize" then
-    draw()
-  end
-end
+parallel.waitForAny(sortLoop, uiLoop)
