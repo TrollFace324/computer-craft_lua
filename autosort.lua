@@ -1,22 +1,20 @@
 -- autosort.lua
 -- Fast infinite auto sorter with unnamed chest groups.
--- Fixed input: carved_wood:barrel_0
+-- Side peripherals like bottom/top/left/right/front/back are ignored.
+-- Fixed input barrel.
 -- 3x3 monitor UI. SAVE button is on middle-left monitor block.
 
 ------------------------------------------------------------
 -- SETTINGS
 ------------------------------------------------------------
 
-local INPUT_CHEST = "carved_wood:barrel_0"
+local INPUT_CHEST = "carved_wood:barrel_1"
 
 local TEMPLATE_FILE = "autosort_template.tbl"
 local MATCH_NBT = false
 
 -- Groups without names.
--- Program will create: group_1, group_2, group_3...
---
--- If an item exists in any chest of group_1,
--- that item may be placed into any chest of group_1.
+-- Program will create group_1, group_2, group_3...
 --
 -- Example:
 -- local CHEST_GROUPS = {
@@ -30,6 +28,9 @@ local MATCH_NBT = false
 --     "minecraft:barrel_4",
 --   },
 -- }
+--
+-- If one item exists in any chest of group_1,
+-- that item may be placed into any chest of group_1.
 
 local CHEST_GROUPS = {
   {
@@ -51,11 +52,13 @@ local AUTO_ADD_UNGROUPED_CHESTS = true
 -- SYSTEM
 ------------------------------------------------------------
 
+local TEMPLATE_VERSION = 11
+
 local serialize = textutils.serialise or textutils.serialize
 local unserialize = textutils.unserialise or textutils.unserialize
 
 local template = {
-  version = 10,
+  version = TEMPLATE_VERSION,
   match_nbt = MATCH_NBT,
   saved_at = "never",
   groups = {},
@@ -120,11 +123,24 @@ local function getTimeString()
   return tostring(os.time())
 end
 
+local function isSideName(name)
+  return name == "top"
+    or name == "bottom"
+    or name == "left"
+    or name == "right"
+    or name == "front"
+    or name == "back"
+end
+
 local function exists(name)
   return name and peripheral.wrap(name) ~= nil
 end
 
 local function isInventory(name)
+  if isSideName(name) then
+    return false
+  end
+
   local p = peripheral.wrap(name)
 
   return type(p) == "table"
@@ -159,11 +175,6 @@ local function tableSize(t)
   end
 
   return n
-end
-
-local function yieldNow()
-  os.queueEvent("autosort_yield")
-  os.pullEvent("autosort_yield")
 end
 
 ------------------------------------------------------------
@@ -201,7 +212,10 @@ local function loadTemplateFile()
 
   local data = unserialize(raw)
 
-  if type(data) == "table" and type(data.groups) == "table" then
+  if type(data) == "table"
+    and data.version == TEMPLATE_VERSION
+    and type(data.groups) == "table"
+  then
     template = data
     MATCH_NBT = data.match_nbt or false
     lastSaved = data.saved_at or "unknown"
@@ -219,7 +233,11 @@ local function getAllInventories()
   local result = {}
 
   for _, name in ipairs(peripheral.getNames()) do
-    if name ~= monitorName and isInventory(name) then
+    if name ~= monitorName
+      and name ~= INPUT_CHEST
+      and not isSideName(name)
+      and isInventory(name)
+    then
       table.insert(result, name)
     end
   end
@@ -245,7 +263,9 @@ local function getManualGroupedSet()
 
   for _, groupList in ipairs(CHEST_GROUPS) do
     for _, chestName in ipairs(groupList) do
-      set[chestName] = true
+      if not isSideName(chestName) then
+        set[chestName] = true
+      end
     end
   end
 
@@ -266,7 +286,11 @@ local function getActiveGroups()
     }
 
     for _, chestName in ipairs(groupList) do
-      if chestName ~= INPUT_CHEST and exists(chestName) and isInventory(chestName) then
+      if chestName ~= INPUT_CHEST
+        and not isSideName(chestName)
+        and exists(chestName)
+        and isInventory(chestName)
+      then
         table.insert(groups[groupName].chests, chestName)
       end
     end
@@ -295,7 +319,16 @@ local function getActiveGroups()
 end
 
 local function countActiveGroups()
-  return tableSize(getActiveGroups())
+  local groups = getActiveGroups()
+  local n = 0
+
+  for _, group in pairs(groups) do
+    if #group.chests > 0 then
+      n = n + 1
+    end
+  end
+
+  return n
 end
 
 local function countTemplateGroups()
@@ -370,13 +403,21 @@ local function rebuildRoutes()
 
     if activeGroup and type(activeGroup.chests) == "table" then
       for _, chestName in ipairs(activeGroup.chests) do
-        if chestName ~= INPUT_CHEST and exists(chestName) and isInventory(chestName) then
+        if chestName ~= INPUT_CHEST
+          and not isSideName(chestName)
+          and exists(chestName)
+          and isInventory(chestName)
+        then
           table.insert(targetChests, chestName)
         end
       end
     elseif type(groupData.chests) == "table" then
       for _, chestName in ipairs(groupData.chests) do
-        if chestName ~= INPUT_CHEST and exists(chestName) and isInventory(chestName) then
+        if chestName ~= INPUT_CHEST
+          and not isSideName(chestName)
+          and exists(chestName)
+          and isInventory(chestName)
+        then
           table.insert(targetChests, chestName)
         end
       end
@@ -409,27 +450,29 @@ local function saveTemplate()
   local usedGroups = 0
 
   for groupName, group in pairs(activeGroups) do
-    local items = scanGroup(group)
-    local hasItems = false
+    if #group.chests > 0 then
+      local items = scanGroup(group)
+      local hasItems = false
 
-    for _ in pairs(items) do
-      hasItems = true
-      sampleCount = sampleCount + 1
-    end
+      for _ in pairs(items) do
+        hasItems = true
+        sampleCount = sampleCount + 1
+      end
 
-    if hasItems then
-      newGroups[groupName] = {
-        saved_at = getTimeString(),
-        chests = group.chests,
-        items = items,
-      }
+      if hasItems then
+        newGroups[groupName] = {
+          saved_at = getTimeString(),
+          chests = group.chests,
+          items = items,
+        }
 
-      usedGroups = usedGroups + 1
+        usedGroups = usedGroups + 1
+      end
     end
   end
 
   template = {
-    version = 10,
+    version = TEMPLATE_VERSION,
     match_nbt = MATCH_NBT,
     saved_at = getTimeString(),
     groups = newGroups,
@@ -458,7 +501,10 @@ local function tryPushToTargets(input, slot, item, targets)
       break
     end
 
-    if targetName ~= INPUT_CHEST and exists(targetName) then
+    if targetName ~= INPUT_CHEST
+      and not isSideName(targetName)
+      and exists(targetName)
+    then
       local ok, amount = pcall(function()
         return input.pushItems(targetName, slot, remaining)
       end)
@@ -485,6 +531,7 @@ local function sortOnePass()
   end
 
   local input = peripheral.wrap(INPUT_CHEST)
+
   if not input then
     lastStatus = "Input wrap failed"
     return
@@ -503,13 +550,10 @@ local function sortOnePass()
 
       movedTotal = movedTotal + moved
 
-      -- If all target chests are full, item is skipped and stays in input.
       if remaining > 0 then
         fullTotal = fullTotal + remaining
       end
     else
-      -- No template for this item. Skip it.
-      -- It stays in input chest.
       unknownTotal = unknownTotal + item.count
     end
   end
@@ -520,6 +564,10 @@ local function sortOnePass()
   cycles = cycles + 1
 
   lastStatus = "M:" .. movedTotal .. " U:" .. unknownTotal .. " F:" .. fullTotal
+
+  if movedTotal > 0 or unknownTotal > 0 or fullTotal > 0 or cycles % 20 == 0 then
+    needRedraw = true
+  end
 end
 
 ------------------------------------------------------------
@@ -571,11 +619,6 @@ local function updateButtonPosition()
   local colW = math.floor(sw / 3)
   local rowH = math.floor(sh / 3)
 
-  -- Middle-left monitor block:
-  -- [MONITOR][MONITOR][MONITOR]
-  -- [SAVE   ][MONITOR][MONITOR]
-  -- [MONITOR][MONITOR][MONITOR]
-
   button.x = 1
   button.y = rowH + 1
   button.w = colW
@@ -614,7 +657,6 @@ local function draw()
   local colW = math.floor(sw / 3)
   local rowH = math.floor(sh / 3)
 
-  -- Grid lines
   for y = 1, sh do
     if colW + 1 <= sw then
       writeAt(colW + 1, y, "|", colors.gray, colors.black)
@@ -638,46 +680,37 @@ local function draw()
   local x2 = colW + 3
   local x3 = colW * 2 + 3
 
-  -- Top-left
   writeAt(2, 1, "SORTER", colors.yellow, colors.black)
   writeAt(2, 2, "FAST LOOP", colors.lime, colors.black)
   writeAt(2, 3, "S=SAVE", colors.gray, colors.black)
 
-  -- Top-middle
   writeAt(x2, 1, "INPUT", colors.yellow, colors.black)
   writeAt(x2, 2, shortText(INPUT_CHEST, colW - 2), colors.white, colors.black)
   writeAt(x2, 3, "FND:" .. tostring(exists(INPUT_CHEST)), colors.white, colors.black)
 
-  -- Top-right
   writeAt(x3, 1, "NET", colors.yellow, colors.black)
   writeAt(x3, 2, "ST:" .. tostring(#getStorageChests()), colors.white, colors.black)
   writeAt(x3, 3, "GR:" .. tostring(countActiveGroups()), colors.white, colors.black)
 
-  -- Middle-left
   drawButton()
 
-  -- Middle
   writeAt(x2, rowH + 2, "TEMPLATE", colors.yellow, colors.black)
   writeAt(x2, rowH + 3, "TG:" .. tostring(countTemplateGroups()), colors.lightGray, colors.black)
   writeAt(x2, rowH + 4, "S:" .. tostring(countSamples()), colors.lightGray, colors.black)
   writeAt(x2, rowH + 5, "U:" .. tostring(countUniqueItems()), colors.lightGray, colors.black)
 
-  -- Middle-right
   writeAt(x3, rowH + 2, "SORT", colors.yellow, colors.black)
   writeAt(x3, rowH + 3, "MV:" .. tostring(lastMoved), colors.white, colors.black)
   writeAt(x3, rowH + 4, "UN:" .. tostring(lastUnknown), colors.white, colors.black)
   writeAt(x3, rowH + 5, "FL:" .. tostring(lastFull), colors.white, colors.black)
 
-  -- Bottom-left
   writeAt(2, rowH * 2 + 2, "STATUS", colors.yellow, colors.black)
   writeAt(2, rowH * 2 + 3, shortText(lastStatus, colW - 1), colors.white, colors.black)
   writeAt(2, rowH * 2 + 4, "C:" .. tostring(cycles), colors.gray, colors.black)
 
-  -- Bottom-middle
   writeAt(x2, rowH * 2 + 2, "LAST SAVE", colors.yellow, colors.black)
   writeAt(x2, rowH * 2 + 3, shortText(lastSaved, colW - 2), colors.lightGray, colors.black)
 
-  -- Bottom-right
   writeAt(x3, rowH * 2 + 2, "FILE", colors.yellow, colors.black)
   writeAt(x3, rowH * 2 + 3, shortText(TEMPLATE_FILE, colW - 2), colors.lightGray, colors.black)
 
@@ -700,48 +733,28 @@ local function handleClick(x, y)
   end
 end
 
-------------------------------------------------------------
--- LOOPS
-------------------------------------------------------------
+local function handleEvent(event, a, b, c)
+  if event == "monitor_touch" then
+    local x = b
+    local y = c
+    handleClick(x, y)
 
-local function sortLoop()
-  while true do
-    sortOnePass()
+  elseif event == "mouse_click" and not monitor then
+    local x = b
+    local y = c
+    handleClick(x, y)
 
-    -- No sleep, no timer.
-    -- This only yields so ComputerCraft does not kill the program
-    -- and monitor/key events can still be processed.
-    yieldNow()
-  end
-end
-
-local function uiLoop()
-  while true do
-    if needRedraw then
+  elseif event == "key" then
+    if a == keys.s then
+      saveTemplate()
       draw()
+    elseif a == keys.q then
+      clear()
+      error("Exit", 0)
     end
 
-    local event, a, b, c = os.pullEvent()
-
-    if event == "monitor_touch" then
-      local x = b
-      local y = c
-      handleClick(x, y)
-
-    elseif event == "mouse_click" and not monitor then
-      local x = b
-      local y = c
-      handleClick(x, y)
-
-    elseif event == "key" then
-      if a == keys.s then
-        saveTemplate()
-        draw()
-      end
-
-    elseif event == "monitor_resize" or event == "term_resize" then
-      needRedraw = true
-    end
+  elseif event == "monitor_resize" or event == "term_resize" then
+    needRedraw = true
   end
 end
 
@@ -753,4 +766,14 @@ loadTemplateFile()
 rebuildRoutes()
 draw()
 
-parallel.waitForAny(sortLoop, uiLoop)
+while true do
+  sortOnePass()
+
+  if needRedraw then
+    draw()
+  end
+
+  os.queueEvent("autosort_tick")
+  local event, a, b, c = os.pullEvent()
+  handleEvent(event, a, b, c)
+end
