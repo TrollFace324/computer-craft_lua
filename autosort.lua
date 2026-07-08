@@ -1,16 +1,56 @@
 -- autosort.lua
--- Auto sorter for 3x3 big monitor
--- Clickable SAVE button is placed on middle-left monitor block.
+-- Auto sorter with unnamed chest groups.
+-- Groups are named automatically: group_1, group_2, group_3...
 -- Fixed input: carved_wood:barrel_0
+-- 3x3 monitor UI. SAVE button is on middle-left monitor block.
 
 ------------------------------------------------------------
 -- SETTINGS
 ------------------------------------------------------------
 
-local INPUT_CHEST = "carved_wood:barrel_1"
+local INPUT_CHEST = "carved_wood:barrel_0"
+
 local TEMPLATE_FILE = "autosort_template.tbl"
 local SORT_EVERY = 5
 local MATCH_NBT = false
+
+-- Put chest peripheral names here.
+-- Each list becomes group_X.
+--
+-- Example:
+-- local CHEST_GROUPS = {
+--   {
+--     "minecraft:chest_1",
+--     "minecraft:chest_2",
+--   },
+--
+--   {
+--     "minecraft:barrel_3",
+--     "minecraft:barrel_4",
+--   },
+-- }
+--
+-- group_1 = chest_1 + chest_2
+-- group_2 = barrel_3 + barrel_4
+--
+-- If one item is found in any chest of group_1, that item can go
+-- into any chest of group_1.
+
+local CHEST_GROUPS = {
+  {
+    -- "minecraft:chest_1",
+    -- "minecraft:chest_2",
+  },
+
+  {
+    -- "minecraft:chest_3",
+    -- "minecraft:chest_4",
+  },
+}
+
+-- true = all chests not listed above become solo groups automatically.
+-- false = unlisted chests are ignored.
+local AUTO_ADD_UNGROUPED_CHESTS = true
 
 ------------------------------------------------------------
 -- SYSTEM
@@ -20,10 +60,10 @@ local serialize = textutils.serialise or textutils.serialize
 local unserialize = textutils.unserialise or textutils.unserialize
 
 local template = {
-  version = 7,
+  version = 9,
   match_nbt = MATCH_NBT,
   saved_at = "never",
-  chests = {},
+  groups = {},
 }
 
 local lastStatus = "Ready"
@@ -37,6 +77,7 @@ local monitorName = nil
 
 if monitor then
   monitorName = peripheral.getName(monitor)
+
   pcall(function()
     monitor.setTextScale(0.5)
   end)
@@ -52,8 +93,16 @@ local function shortText(text, len)
   text = tostring(text or "")
   len = len or 30
 
+  if len <= 0 then
+    return ""
+  end
+
   if #text <= len then
     return text
+  end
+
+  if len <= 3 then
+    return string.sub(text, 1, len)
   end
 
   return string.sub(text, 1, len - 3) .. "..."
@@ -102,6 +151,16 @@ local function addUnique(list, value)
   table.insert(list, value)
 end
 
+local function tableSize(t)
+  local n = 0
+
+  for _ in pairs(t or {}) do
+    n = n + 1
+  end
+
+  return n
+end
+
 ------------------------------------------------------------
 -- FILES
 ------------------------------------------------------------
@@ -136,18 +195,18 @@ local function loadTemplateFile()
 
   local data = unserialize(raw)
 
-  if type(data) == "table" and type(data.chests) == "table" then
+  if type(data) == "table" and type(data.groups) == "table" then
     template = data
     MATCH_NBT = data.match_nbt or false
     lastSaved = data.saved_at or "unknown"
     lastStatus = "Template loaded"
   else
-    lastStatus = "Template broken"
+    lastStatus = "Old template ignored"
   end
 end
 
 ------------------------------------------------------------
--- INVENTORIES
+-- INVENTORIES AND GROUPS
 ------------------------------------------------------------
 
 local function getAllInventories()
@@ -175,22 +234,74 @@ local function getStorageChests()
   return result
 end
 
-local function countTemplateChests()
-  local n = 0
+local function getManualGroupedSet()
+  local set = {}
 
-  for _ in pairs(template.chests or {}) do
-    n = n + 1
+  for _, groupList in ipairs(CHEST_GROUPS) do
+    for _, chestName in ipairs(groupList) do
+      set[chestName] = true
+    end
   end
 
-  return n
+  return set
+end
+
+local function getActiveGroups()
+  local groups = {}
+  local manualSet = getManualGroupedSet()
+  local groupIndex = 1
+
+  for _, groupList in ipairs(CHEST_GROUPS) do
+    local groupName = "group_" .. tostring(groupIndex)
+
+    groups[groupName] = {
+      name = groupName,
+      chests = {},
+    }
+
+    for _, chestName in ipairs(groupList) do
+      if chestName ~= INPUT_CHEST and exists(chestName) and isInventory(chestName) then
+        table.insert(groups[groupName].chests, chestName)
+      end
+    end
+
+    table.sort(groups[groupName].chests)
+
+    groupIndex = groupIndex + 1
+  end
+
+  if AUTO_ADD_UNGROUPED_CHESTS then
+    for _, chestName in ipairs(getStorageChests()) do
+      if not manualSet[chestName] then
+        local groupName = "group_" .. tostring(groupIndex)
+
+        groups[groupName] = {
+          name = groupName,
+          chests = { chestName },
+        }
+
+        groupIndex = groupIndex + 1
+      end
+    end
+  end
+
+  return groups
+end
+
+local function countActiveGroups()
+  return tableSize(getActiveGroups())
+end
+
+local function countTemplateGroups()
+  return tableSize(template.groups)
 end
 
 local function countSamples()
   local n = 0
 
-  for _, chestData in pairs(template.chests or {}) do
-    if type(chestData.items) == "table" then
-      for _ in pairs(chestData.items) do
+  for _, groupData in pairs(template.groups or {}) do
+    if type(groupData.items) == "table" then
+      for _ in pairs(groupData.items) do
         n = n + 1
       end
     end
@@ -202,47 +313,42 @@ end
 local function countUniqueItems()
   local seen = {}
 
-  for _, chestData in pairs(template.chests or {}) do
-    if type(chestData.items) == "table" then
-      for key in pairs(chestData.items) do
+  for _, groupData in pairs(template.groups or {}) do
+    if type(groupData.items) == "table" then
+      for key in pairs(groupData.items) do
         seen[key] = true
       end
     end
   end
 
-  local n = 0
-
-  for _ in pairs(seen) do
-    n = n + 1
-  end
-
-  return n
+  return tableSize(seen)
 end
 
 ------------------------------------------------------------
 -- TEMPLATE
 ------------------------------------------------------------
 
-local function scanChest(chestName)
-  local chest = peripheral.wrap(chestName)
+local function scanGroup(group)
   local items = {}
 
-  if not chest then
-    return items
-  end
+  for _, chestName in ipairs(group.chests) do
+    local chest = peripheral.wrap(chestName)
 
-  for _, item in pairs(chest.list()) do
-    local key = itemKey(item)
+    if chest then
+      for _, item in pairs(chest.list()) do
+        local key = itemKey(item)
 
-    if not items[key] then
-      items[key] = {
-        name = item.name,
-        nbt = item.nbt,
-        count = 0,
-      }
+        if not items[key] then
+          items[key] = {
+            name = item.name,
+            nbt = item.nbt,
+            count = 0,
+          }
+        end
+
+        items[key].count = items[key].count + item.count
+      end
     end
-
-    items[key].count = items[key].count + item.count
   end
 
   return items
@@ -254,61 +360,71 @@ local function saveTemplate()
     return
   end
 
-  local storageChests = getStorageChests()
-  local newChests = {}
-  local samples = 0
-  local usedChests = 0
+  local activeGroups = getActiveGroups()
+  local newGroups = {}
+  local sampleCount = 0
+  local usedGroups = 0
 
-  for _, chestName in ipairs(storageChests) do
-    local items = scanChest(chestName)
+  for groupName, group in pairs(activeGroups) do
+    local items = scanGroup(group)
     local hasItems = false
 
     for _ in pairs(items) do
       hasItems = true
-      samples = samples + 1
+      sampleCount = sampleCount + 1
     end
 
     if hasItems then
-      newChests[chestName] = {
+      newGroups[groupName] = {
         saved_at = getTimeString(),
+        chests = group.chests,
         items = items,
       }
 
-      usedChests = usedChests + 1
+      usedGroups = usedGroups + 1
     end
   end
 
   template = {
-    version = 7,
+    version = 9,
     match_nbt = MATCH_NBT,
     saved_at = getTimeString(),
-    chests = newChests,
+    groups = newGroups,
   }
 
   lastSaved = template.saved_at
 
   if saveTemplateFile() then
-    lastStatus = "Saved: " .. samples .. " samples"
+    lastStatus = "Saved: " .. sampleCount .. " samples"
   end
 end
 
 local function buildRoutes()
   local routes = {}
-  local chestNames = {}
+  local groupNames = {}
 
-  for chestName in pairs(template.chests or {}) do
-    table.insert(chestNames, chestName)
+  for groupName in pairs(template.groups or {}) do
+    table.insert(groupNames, groupName)
   end
 
-  table.sort(chestNames)
+  table.sort(groupNames)
 
-  for _, chestName in ipairs(chestNames) do
-    local chestData = template.chests[chestName]
+  for _, groupName in ipairs(groupNames) do
+    local groupData = template.groups[groupName]
 
-    if chestName ~= INPUT_CHEST and exists(chestName) then
-      if type(chestData.items) == "table" then
-        for key in pairs(chestData.items) do
-          routes[key] = routes[key] or {}
+    if type(groupData.items) == "table" and type(groupData.chests) == "table" then
+      local availableChests = {}
+
+      for _, chestName in ipairs(groupData.chests) do
+        if chestName ~= INPUT_CHEST and exists(chestName) then
+          table.insert(availableChests, chestName)
+        end
+      end
+
+      for key in pairs(groupData.items) do
+        routes[key] = routes[key] or {}
+
+        for _, chestName in ipairs(availableChests) do
           addUnique(routes[key], chestName)
         end
       end
@@ -377,6 +493,7 @@ local function sortOnce()
         fullTotal = fullTotal + remaining
       end
     else
+      -- Unknown items stay in input chest.
       unknownTotal = unknownTotal + item.count
     end
   end
@@ -434,12 +551,13 @@ end
 local function updateButtonPosition()
   local sw, sh = screen.getSize()
 
-  -- For your 3x3 monitor, size is 29x19.
-  -- Middle-left monitor area:
-  -- x = left third
-  -- y = middle third
   local colW = math.floor(sw / 3)
   local rowH = math.floor(sh / 3)
+
+  -- Middle-left monitor block:
+  -- [MONITOR][MONITOR][MONITOR]
+  -- [SAVE   ][MONITOR][MONITOR]
+  -- [MONITOR][MONITOR][MONITOR]
 
   button.x = 1
   button.y = rowH + 1
@@ -472,78 +590,62 @@ local function drawButton()
   writeAt(textX, textY, button.label, colors.white, colors.blue)
 end
 
-local function drawBox(x, y, w, h, title)
-  writeAt(x, y, "+" .. string.rep("-", w - 2) .. "+", colors.gray, colors.black)
-
-  for yy = y + 1, y + h - 2 do
-    writeAt(x, yy, "|", colors.gray, colors.black)
-    writeAt(x + w - 1, yy, "|", colors.gray, colors.black)
-  end
-
-  writeAt(x, y + h - 1, "+" .. string.rep("-", w - 2) .. "+", colors.gray, colors.black)
-
-  if title then
-    writeAt(x + 1, y, shortText(title, w - 2), colors.yellow, colors.black)
-  end
-end
-
-local function drawChestList(x, y, maxRows)
-  local chests = getStorageChests()
-
-  writeAt(x, y, "STORAGE:", colors.yellow, colors.black)
-
-  for i = 1, math.min(#chests, maxRows) do
-    writeAt(x, y + i, tostring(i) .. " " .. shortText(chests[i], 17), colors.lightGray, colors.black)
-  end
-end
-
 local function draw()
   clear()
 
   local sw, sh = screen.getSize()
-
-  -- Visual 3x3 grid
   local colW = math.floor(sw / 3)
   local rowH = math.floor(sh / 3)
 
-  -- Draw light separators
+  -- Grid lines
   for y = 1, sh do
-    if colW + 1 <= sw then writeAt(colW + 1, y, "|", colors.gray, colors.black) end
-    if colW * 2 + 1 <= sw then writeAt(colW * 2 + 1, y, "|", colors.gray, colors.black) end
+    if colW + 1 <= sw then
+      writeAt(colW + 1, y, "|", colors.gray, colors.black)
+    end
+
+    if colW * 2 + 1 <= sw then
+      writeAt(colW * 2 + 1, y, "|", colors.gray, colors.black)
+    end
   end
 
   for x = 1, sw do
-    if rowH + 1 <= sh then writeAt(x, rowH + 1, "-", colors.gray, colors.black) end
-    if rowH * 2 + 1 <= sh then writeAt(x, rowH * 2 + 1, "-", colors.gray, colors.black) end
+    if rowH + 1 <= sh then
+      writeAt(x, rowH + 1, "-", colors.gray, colors.black)
+    end
+
+    if rowH * 2 + 1 <= sh then
+      writeAt(x, rowH * 2 + 1, "-", colors.gray, colors.black)
+    end
   end
 
-  -- Title, top-left monitor
+  local x2 = colW + 3
+  local x3 = colW * 2 + 3
+
+  -- Top-left
   writeAt(2, 1, "SORTER", colors.yellow, colors.black)
   writeAt(2, 2, "AUTO ON", colors.lime, colors.black)
   writeAt(2, 3, "S=SAVE", colors.gray, colors.black)
 
-  -- Top-middle monitor
-  local x2 = colW + 3
+  -- Top-middle
   writeAt(x2, 1, "INPUT", colors.yellow, colors.black)
   writeAt(x2, 2, shortText(INPUT_CHEST, colW - 2), colors.white, colors.black)
   writeAt(x2, 3, "FND:" .. tostring(exists(INPUT_CHEST)), colors.white, colors.black)
 
-  -- Top-right monitor
-  local x3 = colW * 2 + 3
+  -- Top-right
   writeAt(x3, 1, "NET", colors.yellow, colors.black)
   writeAt(x3, 2, "ST:" .. tostring(#getStorageChests()), colors.white, colors.black)
-  writeAt(x3, 3, "T:" .. tostring(countTemplateChests()), colors.white, colors.black)
+  writeAt(x3, 3, "GR:" .. tostring(countActiveGroups()), colors.white, colors.black)
 
-  -- Work monitor: middle-left
+  -- Middle-left
   drawButton()
 
-  -- Middle monitor stats
+  -- Middle
   writeAt(x2, rowH + 2, "TEMPLATE", colors.yellow, colors.black)
-  writeAt(x2, rowH + 3, "S:" .. tostring(countSamples()), colors.lightGray, colors.black)
-  writeAt(x2, rowH + 4, "U:" .. tostring(countUniqueItems()), colors.lightGray, colors.black)
-  writeAt(x2, rowH + 5, shortText(lastSaved, colW - 2), colors.gray, colors.black)
+  writeAt(x2, rowH + 3, "TG:" .. tostring(countTemplateGroups()), colors.lightGray, colors.black)
+  writeAt(x2, rowH + 4, "S:" .. tostring(countSamples()), colors.lightGray, colors.black)
+  writeAt(x2, rowH + 5, "U:" .. tostring(countUniqueItems()), colors.lightGray, colors.black)
 
-  -- Middle-right sorting stats
+  -- Middle-right
   writeAt(x3, rowH + 2, "SORT", colors.yellow, colors.black)
   writeAt(x3, rowH + 3, "MV:" .. tostring(lastMoved), colors.white, colors.black)
   writeAt(x3, rowH + 4, "UN:" .. tostring(lastUnknown), colors.white, colors.black)
@@ -554,18 +656,12 @@ local function draw()
   writeAt(2, rowH * 2 + 3, shortText(lastStatus, colW - 1), colors.white, colors.black)
 
   -- Bottom-middle
-  writeAt(x2, rowH * 2 + 2, "ITEMS", colors.yellow, colors.black)
-  writeAt(x2, rowH * 2 + 3, "Samples:" .. tostring(countSamples()), colors.lightGray, colors.black)
-  writeAt(x2, rowH * 2 + 4, "Unique:" .. tostring(countUniqueItems()), colors.lightGray, colors.black)
+  writeAt(x2, rowH * 2 + 2, "LAST SAVE", colors.yellow, colors.black)
+  writeAt(x2, rowH * 2 + 3, shortText(lastSaved, colW - 2), colors.lightGray, colors.black)
 
   -- Bottom-right
   writeAt(x3, rowH * 2 + 2, "FILE", colors.yellow, colors.black)
   writeAt(x3, rowH * 2 + 3, shortText(TEMPLATE_FILE, colW - 2), colors.lightGray, colors.black)
-
-  -- If the monitor is wider than 29, show chest list on right area
-  if sw >= 40 then
-    drawChestList(sw - 22, 2, sh - 3)
-  end
 end
 
 local function inButton(x, y)
