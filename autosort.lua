@@ -362,32 +362,31 @@ end
 
 local function rebuildRoutes()
   local newRoutes = {}
-  local groupNames = {}
+  local activeGroups = getActiveGroups()
 
-  for groupName in pairs(template.groups or {}) do
-    table.insert(groupNames, groupName)
-  end
+  for groupName, groupData in pairs(template.groups or {}) do
+    local activeGroup = activeGroups[groupName]
+    local targetChests = {}
 
-  table.sort(groupNames)
-
-  for _, groupName in ipairs(groupNames) do
-    local groupData = template.groups[groupName]
-
-    if type(groupData.items) == "table" and type(groupData.chests) == "table" then
-      local availableChests = {}
-
-      for _, chestName in ipairs(groupData.chests) do
-        if chestName ~= INPUT_CHEST and exists(chestName) then
-          table.insert(availableChests, chestName)
+    if activeGroup and type(activeGroup.chests) == "table" then
+      for _, chestName in ipairs(activeGroup.chests) do
+        if chestName ~= INPUT_CHEST and exists(chestName) and isInventory(chestName) then
+          table.insert(targetChests, chestName)
         end
       end
+    elseif type(groupData.chests) == "table" then
+      for _, chestName in ipairs(groupData.chests) do
+        if chestName ~= INPUT_CHEST and exists(chestName) and isInventory(chestName) then
+          table.insert(targetChests, chestName)
+        end
+      end
+    end
 
-      -- One item can be in several templates/groups.
-      -- Then all chests from all those groups become possible targets.
+    if type(groupData.items) == "table" then
       for key in pairs(groupData.items) do
         newRoutes[key] = newRoutes[key] or {}
 
-        for _, chestName in ipairs(availableChests) do
+        for _, chestName in ipairs(targetChests) do
           addUnique(newRoutes[key], chestName)
         end
       end
