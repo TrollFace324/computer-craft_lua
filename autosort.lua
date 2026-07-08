@@ -1,6 +1,7 @@
 -- autosort.lua
--- Compact auto sorter for one Advanced Monitor
--- Only one button: SAVE
+-- Big monitor version
+-- One button: SAVE
+-- Fixed input: carved_wood:barrel_0
 
 ------------------------------------------------------------
 -- SETTINGS
@@ -19,7 +20,7 @@ local serialize = textutils.serialise or textutils.serialize
 local unserialize = textutils.unserialise or textutils.unserialize
 
 local template = {
-  version = 5,
+  version = 6,
   match_nbt = MATCH_NBT,
   saved_at = "never",
   chests = {},
@@ -29,13 +30,13 @@ local lastStatus = "Ready"
 local lastMoved = 0
 local lastUnknown = 0
 local lastFull = 0
+local lastSaved = "never"
 
 local monitor = peripheral.find("monitor")
 local monitorName = nil
 
 if monitor then
   monitorName = peripheral.getName(monitor)
-
   pcall(function()
     monitor.setTextScale(0.5)
   end)
@@ -49,7 +50,7 @@ local screen = monitor or term.current()
 
 local function shortText(text, len)
   text = tostring(text or "")
-  len = len or 20
+  len = len or 30
 
   if #text <= len then
     return text
@@ -138,6 +139,7 @@ local function loadTemplateFile()
   if type(data) == "table" and type(data.chests) == "table" then
     template = data
     MATCH_NBT = data.match_nbt or false
+    lastSaved = data.saved_at or "unknown"
     lastStatus = "Template loaded"
   else
     lastStatus = "Template broken"
@@ -255,6 +257,7 @@ local function saveTemplate()
   local storageChests = getStorageChests()
   local newChests = {}
   local samples = 0
+  local usedChests = 0
 
   for _, chestName in ipairs(storageChests) do
     local items = scanChest(chestName)
@@ -270,18 +273,22 @@ local function saveTemplate()
         saved_at = getTimeString(),
         items = items,
       }
+
+      usedChests = usedChests + 1
     end
   end
 
   template = {
-    version = 5,
+    version = 6,
     match_nbt = MATCH_NBT,
     saved_at = getTimeString(),
     chests = newChests,
   }
 
+  lastSaved = template.saved_at
+
   if saveTemplateFile() then
-    lastStatus = "Saved: " .. samples .. " samples"
+    lastStatus = "Saved: " .. samples .. " samples, " .. usedChests .. " chests"
   end
 end
 
@@ -386,9 +393,9 @@ end
 ------------------------------------------------------------
 
 local button = {
-  x = 1,
-  y = 2,
-  w = 10,
+  x = 2,
+  y = 3,
+  w = 24,
   h = 3,
   label = "SAVE",
 }
@@ -425,13 +432,6 @@ local function clear()
 end
 
 local function drawButton()
-  local sw, sh = screen.getSize()
-
-  button.x = 1
-  button.y = 2
-  button.w = sw
-  button.h = 3
-
   for yy = 0, button.h - 1 do
     writeAt(button.x, button.y + yy, string.rep(" ", button.w), colors.white, colors.blue)
   end
@@ -439,11 +439,17 @@ local function drawButton()
   local textX = button.x + math.floor((button.w - #button.label) / 2)
   local textY = button.y + 1
 
-  if textX < 1 then
-    textX = 1
-  end
-
   writeAt(textX, textY, button.label, colors.white, colors.blue)
+end
+
+local function drawChestList(startX, startY, maxRows)
+  local chests = getStorageChests()
+
+  writeAt(startX, startY, "Storage list:", colors.yellow, colors.black)
+
+  for i = 1, math.min(#chests, maxRows) do
+    writeAt(startX, startY + i, tostring(i) .. ". " .. shortText(chests[i], 28), colors.lightGray, colors.black)
+  end
 end
 
 local function draw()
@@ -451,18 +457,31 @@ local function draw()
 
   local sw, sh = screen.getSize()
 
-  writeAt(1, 1, shortText("SORTER", sw), colors.yellow, colors.black)
-
+  writeAt(2, 1, "AUTO SORTER", colors.yellow, colors.black)
   drawButton()
 
-  writeAt(1, 6, shortText("IN:" .. INPUT_CHEST, sw), colors.white, colors.black)
-  writeAt(1, 7, shortText("FND:" .. tostring(exists(INPUT_CHEST)) .. " ST:" .. #getStorageChests(), sw), colors.white, colors.black)
-  writeAt(1, 8, shortText("T:" .. countTemplateChests() .. " S:" .. countSamples() .. " U:" .. countUniqueItems(), sw), colors.lightGray, colors.black)
-  writeAt(1, 9, shortText("MV:" .. lastMoved .. " UN:" .. lastUnknown .. " FL:" .. lastFull, sw), colors.lightGray, colors.black)
-  writeAt(1, 10, shortText(lastStatus, sw), colors.white, colors.black)
+  local y = 8
 
-  if sh >= 11 then
-    writeAt(1, 11, shortText("Key S also saves", sw), colors.gray, colors.black)
+  writeAt(2, y,     "Input: " .. INPUT_CHEST, colors.white, colors.black)
+  writeAt(2, y + 1, "Input found: " .. tostring(exists(INPUT_CHEST)), colors.white, colors.black)
+  writeAt(2, y + 2, "Storage chests: " .. tostring(#getStorageChests()), colors.white, colors.black)
+
+  writeAt(2, y + 4, "Template chests: " .. tostring(countTemplateChests()), colors.lightGray, colors.black)
+  writeAt(2, y + 5, "Item samples: " .. tostring(countSamples()), colors.lightGray, colors.black)
+  writeAt(2, y + 6, "Unique items: " .. tostring(countUniqueItems()), colors.lightGray, colors.black)
+  writeAt(2, y + 7, "Last saved: " .. shortText(lastSaved, 30), colors.lightGray, colors.black)
+
+  writeAt(2, y + 9, "Moved: " .. tostring(lastMoved), colors.white, colors.black)
+  writeAt(2, y + 10, "Unknown: " .. tostring(lastUnknown), colors.white, colors.black)
+  writeAt(2, y + 11, "Full: " .. tostring(lastFull), colors.white, colors.black)
+
+  writeAt(2, y + 13, "Status:", colors.yellow, colors.black)
+  writeAt(2, y + 14, shortText(lastStatus, sw - 4), colors.white, colors.black)
+
+  writeAt(2, y + 16, "Key S = SAVE", colors.gray, colors.black)
+
+  if sw >= 58 then
+    drawChestList(34, 3, sh - 4)
   end
 end
 
