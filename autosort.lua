@@ -1,5 +1,5 @@
 -- autosort.lua
--- Fast infinite auto sorter with unnamed chest groups.
+-- Fast infinite auto sorter with terminal logs.
 -- Side peripherals like bottom/top/left/right/front/back are ignored.
 -- Fixed input barrel.
 -- 3x3 monitor UI. SAVE button is on middle-left monitor block.
@@ -13,34 +13,24 @@ local INPUT_CHEST = "carved_wood:barrel_1"
 local TEMPLATE_FILE = "autosort_template.tbl"
 local MATCH_NBT = false
 
+-- true = show detailed logs in PC terminal
+local LOG_ENABLED = true
+
+-- true = log every unknown item every time
+-- false = log unknown item only once
+local LOG_UNKNOWN_EVERY_TIME = false
+
 -- Groups without names.
 -- Program will create group_1, group_2, group_3...
---
--- Example:
--- local CHEST_GROUPS = {
---   {
---     "minecraft:chest_1",
---     "minecraft:chest_2",
---   },
---
---   {
---     "minecraft:barrel_3",
---     "minecraft:barrel_4",
---   },
--- }
---
--- If one item exists in any chest of group_1,
--- that item may be placed into any chest of group_1.
-
 local CHEST_GROUPS = {
   {
-    -- "minecraft:chest_1",
-    -- "minecraft:chest_2",
+    -- "carved_wood:chest_9",
+    -- "carved_wood:chest_10",
   },
 
   {
-    -- "minecraft:chest_3",
-    -- "minecraft:chest_4",
+    -- "carved_wood:chest_11",
+    -- "carved_wood:chest_12",
   },
 }
 
@@ -52,7 +42,7 @@ local AUTO_ADD_UNGROUPED_CHESTS = true
 -- SYSTEM
 ------------------------------------------------------------
 
-local TEMPLATE_VERSION = 11
+local TEMPLATE_VERSION = 12
 
 local serialize = textutils.serialise or textutils.serialize
 local unserialize = textutils.unserialise or textutils.unserialize
@@ -87,6 +77,44 @@ if monitor then
 end
 
 local screen = monitor or term.current()
+local logTerm = term.current()
+
+local loggedUnknown = {}
+local loggedFull = {}
+
+------------------------------------------------------------
+-- LOGGING
+------------------------------------------------------------
+
+local function log(msg)
+  if not LOG_ENABLED then
+    return
+  end
+
+  local oldTerm = term.current()
+
+  pcall(function()
+    term.redirect(logTerm)
+
+    local w, h = term.getSize()
+    local x, y = term.getCursorPos()
+
+    if y >= h then
+      term.scroll(1)
+      term.setCursorPos(1, h)
+    end
+
+    print("[SORT] " .. tostring(msg))
+  end)
+
+  pcall(function()
+    term.redirect(oldTerm)
+  end)
+end
+
+local function logSep()
+  log("--------------------------------")
+end
 
 ------------------------------------------------------------
 -- HELPERS
@@ -187,23 +215,27 @@ local function saveTemplateFile()
   if not f then
     lastStatus = "Cannot save file"
     needRedraw = true
+    log("ERROR: cannot save template file")
     return false
   end
 
   f.write(serialize(template))
   f.close()
 
+  log("Template file saved: " .. TEMPLATE_FILE)
   return true
 end
 
 local function loadTemplateFile()
   if not fs.exists(TEMPLATE_FILE) then
+    log("No template file yet")
     return
   end
 
   local f = fs.open(TEMPLATE_FILE, "r")
 
   if not f then
+    log("ERROR: cannot open template file")
     return
   end
 
@@ -220,8 +252,10 @@ local function loadTemplateFile()
     MATCH_NBT = data.match_nbt or false
     lastSaved = data.saved_at or "unknown"
     lastStatus = "Template loaded"
+    log("Template loaded")
   else
     lastStatus = "Old template ignored"
+    log("Old/broken template ignored. Delete " .. TEMPLATE_FILE .. " and SAVE again if needed.")
   end
 end
 
@@ -292,6 +326,10 @@ local function getActiveGroups()
         and isInventory(chestName)
       then
         table.insert(groups[groupName].chests, chestName)
+      else
+        if chestName ~= nil and chestName ~= "" then
+          log("Group skip invalid chest: " .. tostring(chestName))
+        end
       end
     end
 
@@ -374,6 +412,8 @@ local function scanGroup(group)
     local chest = peripheral.wrap(chestName)
 
     if chest then
+      local chestItemCount = 0
+
       for _, item in pairs(chest.list()) do
         local key = itemKey(item)
 
@@ -386,7 +426,12 @@ local function scanGroup(group)
         end
 
         items[key].count = items[key].count + item.count
+        chestItemCount = chestItemCount + item.count
       end
+
+      log("Scan chest " .. chestName .. " items=" .. chestItemCount)
+    else
+      log("Scan failed, chest missing: " .. tostring(chestName))
     end
   end
 
@@ -396,6 +441,7 @@ end
 local function rebuildRoutes()
   local newRoutes = {}
   local activeGroups = getActiveGroups()
+  local routeCount = 0
 
   for groupName, groupData in pairs(template.groups or {}) do
     local activeGroup = activeGroups[groupName]
@@ -423,6 +469,8 @@ local function rebuildRoutes()
       end
     end
 
+    log("Route group " .. groupName .. " targets=" .. tostring(#targetChests))
+
     if type(groupData.items) == "table" then
       for key in pairs(groupData.items) do
         newRoutes[key] = newRoutes[key] or {}
@@ -430,17 +478,24 @@ local function rebuildRoutes()
         for _, chestName in ipairs(targetChests) do
           addUnique(newRoutes[key], chestName)
         end
+
+        routeCount = routeCount + 1
       end
     end
   end
 
   routes = newRoutes
+  log("Routes rebuilt. Items with routes=" .. tostring(routeCount))
 end
 
 local function saveTemplate()
+  logSep()
+  log("SAVE pressed")
+
   if not exists(INPUT_CHEST) then
     lastStatus = "Input not found"
     needRedraw = true
+    log("ERROR: input not found: " .. INPUT_CHEST)
     return
   end
 
@@ -451,12 +506,21 @@ local function saveTemplate()
 
   for groupName, group in pairs(activeGroups) do
     if #group.chests > 0 then
+      log("Saving " .. groupName .. " chests=" .. tostring(#group.chests))
+
+      for _, chestName in ipairs(group.chests) do
+        log("  chest: " .. chestName)
+      end
+
       local items = scanGroup(group)
       local hasItems = false
+      local itemTypes = 0
 
-      for _ in pairs(items) do
+      for key, data in pairs(items) do
         hasItems = true
         sampleCount = sampleCount + 1
+        itemTypes = itemTypes + 1
+        log("  sample: " .. key .. " x" .. tostring(data.count))
       end
 
       if hasItems then
@@ -467,6 +531,9 @@ local function saveTemplate()
         }
 
         usedGroups = usedGroups + 1
+        log("  saved group item types=" .. tostring(itemTypes))
+      else
+        log("  group empty, not saved")
       end
     end
   end
@@ -483,7 +550,11 @@ local function saveTemplate()
   if saveTemplateFile() then
     rebuildRoutes()
     lastStatus = "Saved: " .. sampleCount .. " samples"
+    log("SAVE done. groups=" .. usedGroups .. " samples=" .. sampleCount)
   end
+
+  loggedUnknown = {}
+  loggedFull = {}
 
   needRedraw = true
 end
@@ -495,6 +566,8 @@ end
 local function tryPushToTargets(input, slot, item, targets)
   local remaining = item.count
   local moved = 0
+
+  log("Try move " .. item.name .. " x" .. item.count .. " from slot " .. tostring(slot) .. " targets=" .. tostring(#targets))
 
   for _, targetName in ipairs(targets) do
     if remaining <= 0 then
@@ -509,11 +582,23 @@ local function tryPushToTargets(input, slot, item, targets)
         return input.pushItems(targetName, slot, remaining)
       end)
 
-      if ok and type(amount) == "number" and amount > 0 then
-        moved = moved + amount
-        remaining = remaining - amount
+      if ok then
+        log("  push -> " .. targetName .. " moved=" .. tostring(amount))
+
+        if type(amount) == "number" and amount > 0 then
+          moved = moved + amount
+          remaining = remaining - amount
+        end
+      else
+        log("  push ERROR -> " .. targetName .. " : " .. tostring(amount))
       end
+    else
+      log("  skip invalid target: " .. tostring(targetName))
     end
+  end
+
+  if moved == 0 then
+    log("  nothing moved for " .. item.name)
   end
 
   return moved, remaining
@@ -540,8 +625,11 @@ local function sortOnePass()
   local movedTotal = 0
   local unknownTotal = 0
   local fullTotal = 0
+  local sawAnyInput = false
 
   for slot, item in pairs(input.list()) do
+    sawAnyInput = true
+
     local key = itemKey(item)
     local targets = routes[key]
 
@@ -552,9 +640,19 @@ local function sortOnePass()
 
       if remaining > 0 then
         fullTotal = fullTotal + remaining
+
+        if not loggedFull[key] then
+          loggedFull[key] = true
+          log("FULL/SKIP: " .. key .. " remaining=" .. tostring(remaining))
+        end
       end
     else
       unknownTotal = unknownTotal + item.count
+
+      if LOG_UNKNOWN_EVERY_TIME or not loggedUnknown[key] then
+        loggedUnknown[key] = true
+        log("UNKNOWN/SKIP: " .. key .. " x" .. tostring(item.count) .. " not found in template")
+      end
     end
   end
 
@@ -567,6 +665,14 @@ local function sortOnePass()
 
   if movedTotal > 0 or unknownTotal > 0 or fullTotal > 0 or cycles % 20 == 0 then
     needRedraw = true
+  end
+
+  if cycles % 100 == 0 then
+    if sawAnyInput then
+      log("Cycle " .. cycles .. " result: " .. lastStatus)
+    else
+      log("Cycle " .. cycles .. ": input empty")
+    end
   end
 end
 
@@ -761,6 +867,19 @@ end
 ------------------------------------------------------------
 -- START
 ------------------------------------------------------------
+
+term.clear()
+term.setCursorPos(1, 1)
+
+logSep()
+log("Program start")
+log("Input: " .. INPUT_CHEST)
+log("Monitor: " .. tostring(monitorName))
+log("Detected storage chests:")
+
+for _, chestName in ipairs(getStorageChests()) do
+  log("  " .. chestName)
+end
 
 loadTemplateFile()
 rebuildRoutes()
