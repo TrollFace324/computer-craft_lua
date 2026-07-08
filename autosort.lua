@@ -1,5 +1,5 @@
 -- autosort.lua
--- Fast infinite auto sorter with terminal logs.
+-- Fast infinite auto sorter with terminal logs and separate event loop.
 -- Side peripherals like bottom/top/left/right/front/back are ignored.
 -- Fixed input barrel.
 -- 3x3 monitor UI. SAVE button is on middle-left monitor block.
@@ -16,12 +16,25 @@ local MATCH_NBT = false
 -- true = show detailed logs in PC terminal
 local LOG_ENABLED = true
 
--- true = log every unknown item every time
 -- false = log unknown item only once
 local LOG_UNKNOWN_EVERY_TIME = false
 
 -- Groups without names.
 -- Program will create group_1, group_2, group_3...
+--
+-- Example:
+-- local CHEST_GROUPS = {
+--   {
+--     "carved_wood:chest_9",
+--     "carved_wood:chest_10",
+--   },
+--
+--   {
+--     "carved_wood:chest_11",
+--     "carved_wood:chest_12",
+--   },
+-- }
+
 local CHEST_GROUPS = {
   {
     -- "carved_wood:chest_9",
@@ -42,7 +55,7 @@ local AUTO_ADD_UNGROUPED_CHESTS = true
 -- SYSTEM
 ------------------------------------------------------------
 
-local TEMPLATE_VERSION = 12
+local TEMPLATE_VERSION = 13
 
 local serialize = textutils.serialise or textutils.serialize
 local unserialize = textutils.unserialise or textutils.unserialize
@@ -96,8 +109,8 @@ local function log(msg)
   pcall(function()
     term.redirect(logTerm)
 
-    local w, h = term.getSize()
-    local x, y = term.getCursorPos()
+    local _, h = term.getSize()
+    local _, y = term.getCursorPos()
 
     if y >= h then
       term.scroll(1)
@@ -334,7 +347,6 @@ local function getActiveGroups()
     end
 
     table.sort(groups[groupName].chests)
-
     groupIndex = groupIndex + 1
   end
 
@@ -839,28 +851,53 @@ local function handleClick(x, y)
   end
 end
 
-local function handleEvent(event, a, b, c)
-  if event == "monitor_touch" then
-    local x = b
-    local y = c
-    handleClick(x, y)
+------------------------------------------------------------
+-- LOOPS
+------------------------------------------------------------
 
-  elseif event == "mouse_click" and not monitor then
-    local x = b
-    local y = c
-    handleClick(x, y)
+local function sortLoop()
+  while true do
+    sortOnePass()
 
-  elseif event == "key" then
-    if a == keys.s then
-      saveTemplate()
+    if needRedraw then
       draw()
-    elseif a == keys.q then
-      clear()
-      error("Exit", 0)
     end
 
-  elseif event == "monitor_resize" or event == "term_resize" then
-    needRedraw = true
+    -- Yield control so monitor/key events can be handled.
+    -- This is not a real seconds delay.
+    sleep(0)
+  end
+end
+
+local function eventLoop()
+  while true do
+    local event, a, b, c = os.pullEvent()
+
+    if event == "monitor_touch" then
+      local x = b
+      local y = c
+      log("Monitor touch x=" .. tostring(x) .. " y=" .. tostring(y))
+      handleClick(x, y)
+
+    elseif event == "mouse_click" and not monitor then
+      local x = b
+      local y = c
+      log("Mouse click x=" .. tostring(x) .. " y=" .. tostring(y))
+      handleClick(x, y)
+
+    elseif event == "key" then
+      if a == keys.s then
+        log("Key S pressed")
+        saveTemplate()
+        draw()
+      elseif a == keys.q then
+        clear()
+        error("Exit", 0)
+      end
+
+    elseif event == "monitor_resize" or event == "term_resize" then
+      needRedraw = true
+    end
   end
 end
 
@@ -885,14 +922,4 @@ loadTemplateFile()
 rebuildRoutes()
 draw()
 
-while true do
-  sortOnePass()
-
-  if needRedraw then
-    draw()
-  end
-
-  os.queueEvent("autosort_tick")
-  local event, a, b, c = os.pullEvent()
-  handleEvent(event, a, b, c)
-end
+parallel.waitForAny(sortLoop, eventLoop)
