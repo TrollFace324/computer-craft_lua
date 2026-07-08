@@ -1,13 +1,13 @@
 -- autosort.lua
--- Big monitor version
--- One button: SAVE
+-- Auto sorter for 3x3 big monitor
+-- Clickable SAVE button is placed on middle-left monitor block.
 -- Fixed input: carved_wood:barrel_0
 
 ------------------------------------------------------------
 -- SETTINGS
 ------------------------------------------------------------
 
-local INPUT_CHEST = "carved_wood:barrel_0"
+local INPUT_CHEST = "carved_wood:barrel_1"
 local TEMPLATE_FILE = "autosort_template.tbl"
 local SORT_EVERY = 5
 local MATCH_NBT = false
@@ -20,7 +20,7 @@ local serialize = textutils.serialise or textutils.serialize
 local unserialize = textutils.unserialise or textutils.unserialize
 
 local template = {
-  version = 6,
+  version = 7,
   match_nbt = MATCH_NBT,
   saved_at = "never",
   chests = {},
@@ -279,7 +279,7 @@ local function saveTemplate()
   end
 
   template = {
-    version = 6,
+    version = 7,
     match_nbt = MATCH_NBT,
     saved_at = getTimeString(),
     chests = newChests,
@@ -288,7 +288,7 @@ local function saveTemplate()
   lastSaved = template.saved_at
 
   if saveTemplateFile() then
-    lastStatus = "Saved: " .. samples .. " samples, " .. usedChests .. " chests"
+    lastStatus = "Saved: " .. samples .. " samples"
   end
 end
 
@@ -393,10 +393,10 @@ end
 ------------------------------------------------------------
 
 local button = {
-  x = 2,
-  y = 3,
-  w = 24,
-  h = 3,
+  x = 1,
+  y = 7,
+  w = 9,
+  h = 6,
   label = "SAVE",
 }
 
@@ -431,24 +431,69 @@ local function clear()
   screen.setCursorPos(1, 1)
 end
 
+local function updateButtonPosition()
+  local sw, sh = screen.getSize()
+
+  -- For your 3x3 monitor, size is 29x19.
+  -- Middle-left monitor area:
+  -- x = left third
+  -- y = middle third
+  local colW = math.floor(sw / 3)
+  local rowH = math.floor(sh / 3)
+
+  button.x = 1
+  button.y = rowH + 1
+  button.w = colW
+  button.h = rowH
+
+  if button.w < 6 then
+    button.w = 6
+  end
+
+  if button.h < 3 then
+    button.h = 3
+  end
+end
+
 local function drawButton()
+  updateButtonPosition()
+
   for yy = 0, button.h - 1 do
     writeAt(button.x, button.y + yy, string.rep(" ", button.w), colors.white, colors.blue)
   end
 
   local textX = button.x + math.floor((button.w - #button.label) / 2)
-  local textY = button.y + 1
+  local textY = button.y + math.floor(button.h / 2)
+
+  if textX < button.x then
+    textX = button.x
+  end
 
   writeAt(textX, textY, button.label, colors.white, colors.blue)
 end
 
-local function drawChestList(startX, startY, maxRows)
+local function drawBox(x, y, w, h, title)
+  writeAt(x, y, "+" .. string.rep("-", w - 2) .. "+", colors.gray, colors.black)
+
+  for yy = y + 1, y + h - 2 do
+    writeAt(x, yy, "|", colors.gray, colors.black)
+    writeAt(x + w - 1, yy, "|", colors.gray, colors.black)
+  end
+
+  writeAt(x, y + h - 1, "+" .. string.rep("-", w - 2) .. "+", colors.gray, colors.black)
+
+  if title then
+    writeAt(x + 1, y, shortText(title, w - 2), colors.yellow, colors.black)
+  end
+end
+
+local function drawChestList(x, y, maxRows)
   local chests = getStorageChests()
 
-  writeAt(startX, startY, "Storage list:", colors.yellow, colors.black)
+  writeAt(x, y, "STORAGE:", colors.yellow, colors.black)
 
   for i = 1, math.min(#chests, maxRows) do
-    writeAt(startX, startY + i, tostring(i) .. ". " .. shortText(chests[i], 28), colors.lightGray, colors.black)
+    writeAt(x, y + i, tostring(i) .. " " .. shortText(chests[i], 17), colors.lightGray, colors.black)
   end
 end
 
@@ -457,35 +502,75 @@ local function draw()
 
   local sw, sh = screen.getSize()
 
-  writeAt(2, 1, "AUTO SORTER", colors.yellow, colors.black)
+  -- Visual 3x3 grid
+  local colW = math.floor(sw / 3)
+  local rowH = math.floor(sh / 3)
+
+  -- Draw light separators
+  for y = 1, sh do
+    if colW + 1 <= sw then writeAt(colW + 1, y, "|", colors.gray, colors.black) end
+    if colW * 2 + 1 <= sw then writeAt(colW * 2 + 1, y, "|", colors.gray, colors.black) end
+  end
+
+  for x = 1, sw do
+    if rowH + 1 <= sh then writeAt(x, rowH + 1, "-", colors.gray, colors.black) end
+    if rowH * 2 + 1 <= sh then writeAt(x, rowH * 2 + 1, "-", colors.gray, colors.black) end
+  end
+
+  -- Title, top-left monitor
+  writeAt(2, 1, "SORTER", colors.yellow, colors.black)
+  writeAt(2, 2, "AUTO ON", colors.lime, colors.black)
+  writeAt(2, 3, "S=SAVE", colors.gray, colors.black)
+
+  -- Top-middle monitor
+  local x2 = colW + 3
+  writeAt(x2, 1, "INPUT", colors.yellow, colors.black)
+  writeAt(x2, 2, shortText(INPUT_CHEST, colW - 2), colors.white, colors.black)
+  writeAt(x2, 3, "FND:" .. tostring(exists(INPUT_CHEST)), colors.white, colors.black)
+
+  -- Top-right monitor
+  local x3 = colW * 2 + 3
+  writeAt(x3, 1, "NET", colors.yellow, colors.black)
+  writeAt(x3, 2, "ST:" .. tostring(#getStorageChests()), colors.white, colors.black)
+  writeAt(x3, 3, "T:" .. tostring(countTemplateChests()), colors.white, colors.black)
+
+  -- Work monitor: middle-left
   drawButton()
 
-  local y = 8
+  -- Middle monitor stats
+  writeAt(x2, rowH + 2, "TEMPLATE", colors.yellow, colors.black)
+  writeAt(x2, rowH + 3, "S:" .. tostring(countSamples()), colors.lightGray, colors.black)
+  writeAt(x2, rowH + 4, "U:" .. tostring(countUniqueItems()), colors.lightGray, colors.black)
+  writeAt(x2, rowH + 5, shortText(lastSaved, colW - 2), colors.gray, colors.black)
 
-  writeAt(2, y,     "Input: " .. INPUT_CHEST, colors.white, colors.black)
-  writeAt(2, y + 1, "Input found: " .. tostring(exists(INPUT_CHEST)), colors.white, colors.black)
-  writeAt(2, y + 2, "Storage chests: " .. tostring(#getStorageChests()), colors.white, colors.black)
+  -- Middle-right sorting stats
+  writeAt(x3, rowH + 2, "SORT", colors.yellow, colors.black)
+  writeAt(x3, rowH + 3, "MV:" .. tostring(lastMoved), colors.white, colors.black)
+  writeAt(x3, rowH + 4, "UN:" .. tostring(lastUnknown), colors.white, colors.black)
+  writeAt(x3, rowH + 5, "FL:" .. tostring(lastFull), colors.white, colors.black)
 
-  writeAt(2, y + 4, "Template chests: " .. tostring(countTemplateChests()), colors.lightGray, colors.black)
-  writeAt(2, y + 5, "Item samples: " .. tostring(countSamples()), colors.lightGray, colors.black)
-  writeAt(2, y + 6, "Unique items: " .. tostring(countUniqueItems()), colors.lightGray, colors.black)
-  writeAt(2, y + 7, "Last saved: " .. shortText(lastSaved, 30), colors.lightGray, colors.black)
+  -- Bottom-left
+  writeAt(2, rowH * 2 + 2, "STATUS", colors.yellow, colors.black)
+  writeAt(2, rowH * 2 + 3, shortText(lastStatus, colW - 1), colors.white, colors.black)
 
-  writeAt(2, y + 9, "Moved: " .. tostring(lastMoved), colors.white, colors.black)
-  writeAt(2, y + 10, "Unknown: " .. tostring(lastUnknown), colors.white, colors.black)
-  writeAt(2, y + 11, "Full: " .. tostring(lastFull), colors.white, colors.black)
+  -- Bottom-middle
+  writeAt(x2, rowH * 2 + 2, "ITEMS", colors.yellow, colors.black)
+  writeAt(x2, rowH * 2 + 3, "Samples:" .. tostring(countSamples()), colors.lightGray, colors.black)
+  writeAt(x2, rowH * 2 + 4, "Unique:" .. tostring(countUniqueItems()), colors.lightGray, colors.black)
 
-  writeAt(2, y + 13, "Status:", colors.yellow, colors.black)
-  writeAt(2, y + 14, shortText(lastStatus, sw - 4), colors.white, colors.black)
+  -- Bottom-right
+  writeAt(x3, rowH * 2 + 2, "FILE", colors.yellow, colors.black)
+  writeAt(x3, rowH * 2 + 3, shortText(TEMPLATE_FILE, colW - 2), colors.lightGray, colors.black)
 
-  writeAt(2, y + 16, "Key S = SAVE", colors.gray, colors.black)
-
-  if sw >= 58 then
-    drawChestList(34, 3, sh - 4)
+  -- If the monitor is wider than 29, show chest list on right area
+  if sw >= 40 then
+    drawChestList(sw - 22, 2, sh - 3)
   end
 end
 
 local function inButton(x, y)
+  updateButtonPosition()
+
   return x >= button.x
     and x < button.x + button.w
     and y >= button.y
