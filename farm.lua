@@ -1,29 +1,23 @@
--- water_farm.lua
+-- water_farm_top.lua
 -- Setup:
--- 1. Plant is in front of the turtle.
--- 2. Hopper is below the turtle.
--- 3. Redstone line for locking the hopper is on the turtle's right side.
--- 4. Use a Farming Turtle if this is a hoe-harvestable crop.
+-- 1. Turtle is ABOVE the plant.
+-- 2. Plant is directly below the turtle.
+-- 3. Water is below the plant.
+-- 4. Crop max age is 3.
+-- 5. Output chest/hopper is in front of the turtle.
+-- 6. Hopper lock redstone is on the turtle's right side.
 
--- Change these if needed:
 local HOPPER_LOCK_SIDE = "right"
 local AGE_STATE = "age"
-local HARVEST_AGE = 7
+local HARVEST_AGE = 3
 
 -- Set this if the turtle replants the wrong item.
--- Examples:
--- local REPLANT_ITEM = "minecraft:wheat_seeds"
--- local REPLANT_ITEM = "minecraft:kelp"
+-- Example:
 -- local REPLANT_ITEM = "farmersdelight:rice"
 local REPLANT_ITEM = nil
 
--- Set to true if you want it to keep checking forever.
 local RUN_FOREVER = true
 local CHECK_INTERVAL = 30
-
--- If your tool is specifically on one side, set "left" or "right".
--- Usually nil is fine.
-local TOOL_SIDE = nil
 
 local function lockHopper()
   redstone.setOutput(HOPPER_LOCK_SIDE, true)
@@ -55,11 +49,11 @@ local function getAge(data)
   return nil
 end
 
-local function isMature()
-  local ok, data = turtle.inspect()
+local function isMatureDown()
+  local ok, data = turtle.inspectDown()
 
   if not ok then
-    print("No block in front.")
+    print("No block below.")
     return false
   end
 
@@ -81,19 +75,10 @@ local function isMature()
   return true
 end
 
-local function digFront()
-  if TOOL_SIDE == nil then
-    return turtle.dig()
-  else
-    return turtle.dig(TOOL_SIDE)
-  end
-end
-
 local function collectDrops()
-  -- turtle.dig() often collects drops automatically,
-  -- but this helps with items floating in front of the turtle.
+  -- Try to collect floating drops below the turtle.
   for i = 1, 8 do
-    turtle.suck()
+    turtle.suckDown()
     sleep(0.2)
   end
 end
@@ -110,8 +95,6 @@ local function findReplantSlot()
     return nil
   end
 
-  -- Fallback: use the first non-empty slot.
-  -- This is fine for plants that drop themselves.
   for slot = 1, 16 do
     if turtle.getItemCount(slot) > 0 then
       return slot
@@ -121,15 +104,15 @@ local function findReplantSlot()
   return nil
 end
 
-local function dumpLeftoversDown()
-  print("Dumping leftover items down.")
+local function dumpLeftoversForward()
+  print("Dumping leftover items forward.")
 
   for slot = 1, 16 do
     turtle.select(slot)
 
     local count = turtle.getItemCount(slot)
     if count > 0 then
-      local ok, err = turtle.dropDown(count)
+      local ok, err = turtle.drop(count)
 
       if not ok then
         print("Could not drop items from slot " .. slot .. ": " .. tostring(err))
@@ -139,17 +122,17 @@ local function dumpLeftoversDown()
 end
 
 local function runCycle()
-  if not isMature() then
+  if not isMatureDown() then
     return
   end
 
   lockHopper()
 
-  print("Harvesting mature block.")
+  print("Harvesting mature block below.")
 
-  local dug, digErr = digFront()
+  local dug, digErr = turtle.digDown()
   if not dug then
-    print("Could not dig block: " .. tostring(digErr))
+    print("Could not dig block below: " .. tostring(digErr))
     unlockHopper()
     return
   end
@@ -167,12 +150,12 @@ local function runCycle()
 
   turtle.select(replantSlot)
 
-  print("Replanting item from slot " .. replantSlot .. ".")
+  print("Replanting below using slot " .. replantSlot .. ".")
 
-  local placed, placeErr = turtle.place()
+  local placed, placeErr = turtle.placeDown()
 
   if not placed then
-    print("Could not replant: " .. tostring(placeErr))
+    print("Could not replant below: " .. tostring(placeErr))
     print("Drops were kept inside the turtle.")
     unlockHopper()
     return
@@ -180,11 +163,9 @@ local function runCycle()
 
   print("Replanted successfully.")
 
-  -- Now it is safe to unlock the hopper.
   unlockHopper()
 
-  -- After replanting, dump all remaining drops into the hopper below.
-  dumpLeftoversDown()
+  dumpLeftoversForward()
 
   print("Cycle complete.")
 end
