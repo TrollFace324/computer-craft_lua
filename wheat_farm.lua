@@ -1,4 +1,4 @@
--- crop_farm.lua
+-- auto_crop_farm.lua
 -- Universal crop farm for one block below the turtle.
 --
 -- Setup:
@@ -7,18 +7,35 @@
 -- [ Farmland ]
 --
 -- Output chest or hopper should be in front of the turtle.
--- Put seeds/replant item in the turtle inventory before starting.
 
-local CROP_BLOCK = "minecraft:carrots"
-local SEED_ITEM = "minecraft:carrot"
 local AGE_STATE = "age"
-local HARVEST_AGE = 7
+local DEFAULT_HARVEST_AGE = 7
 
 local RUN_FOREVER = true
 local CHECK_INTERVAL = 30
 
+-- Items that can be used for replanting.
+-- Add modded seeds here if needed.
+local REPLANT_ITEMS = {
+  "minecraft:wheat_seeds",
+  "minecraft:carrot",
+  "minecraft:potato",
+  "minecraft:beetroot_seeds",
+  "minecraft:nether_wart",
+}
+
+-- Some crops have max age 3 instead of 7.
+local CROP_MAX_AGES = {
+  ["minecraft:beetroots"] = 3,
+  ["minecraft:nether_wart"] = 3,
+}
+
 -- If digDown() does not work, try "left" or "right".
 local TOOL_SIDE = nil
+
+local function getMaxAge(blockName)
+  return CROP_MAX_AGES[blockName] or DEFAULT_HARVEST_AGE
+end
 
 local function getAge(data)
   if not data or not data.state then
@@ -38,36 +55,42 @@ local function getAge(data)
   return nil
 end
 
-local function isMatureCropBelow()
+local function isReplantItem(itemName)
+  for _, name in ipairs(REPLANT_ITEMS) do
+    if itemName == name then
+      return true
+    end
+  end
+
+  return false
+end
+
+local function inspectCropBelow()
   local ok, data = turtle.inspectDown()
 
   if not ok then
     print("No block below.")
-    return false
-  end
-
-  if data.name ~= CROP_BLOCK then
-    print("Block below is not the selected crop.")
-    print("Expected: " .. CROP_BLOCK)
-    print("Found: " .. tostring(data.name))
-    return false
+    return nil
   end
 
   local age = getAge(data)
 
   if age == nil then
-    print("No age state found.")
+    print("Block below has no age state.")
+    print("Block: " .. tostring(data.name))
     print("State: " .. textutils.serialize(data.state))
-    return false
+    return nil
   end
 
-  if age < HARVEST_AGE then
-    print("Crop is not mature yet: age " .. age .. "/" .. HARVEST_AGE .. ".")
-    return false
+  local maxAge = getMaxAge(data.name)
+
+  if age < maxAge then
+    print("Crop is not mature yet: " .. data.name .. " age " .. age .. "/" .. maxAge .. ".")
+    return nil
   end
 
-  print("Crop is mature: age " .. age .. "/" .. HARVEST_AGE .. ".")
-  return true
+  print("Crop is mature: " .. data.name .. " age " .. age .. "/" .. maxAge .. ".")
+  return data.name
 end
 
 local function digDown()
@@ -86,10 +109,11 @@ local function suckDrops()
   end
 end
 
-local function findSeedSlot()
+local function findReplantSlot()
   for slot = 1, 16 do
     local item = turtle.getItemDetail(slot)
-    if item and item.name == SEED_ITEM then
+
+    if item and isReplantItem(item.name) then
       return slot
     end
   end
@@ -97,13 +121,13 @@ local function findSeedSlot()
   return nil
 end
 
-local function dumpNonSeedsForward()
-  print("Dumping crop drops and extra items forward.")
+local function dumpNonReplantItemsForward()
+  print("Dumping non-replant items forward.")
 
   for slot = 1, 16 do
     local item = turtle.getItemDetail(slot)
 
-    if item and item.name ~= SEED_ITEM then
+    if item and not isReplantItem(item.name) then
       turtle.select(slot)
       turtle.drop()
     end
@@ -111,11 +135,13 @@ local function dumpNonSeedsForward()
 end
 
 local function runCycle()
-  if not isMatureCropBelow() then
+  local cropName = inspectCropBelow()
+
+  if not cropName then
     return
   end
 
-  print("Harvesting crop.")
+  print("Harvesting: " .. cropName)
 
   local dug, digErr = digDown()
 
@@ -125,30 +151,30 @@ local function runCycle()
   end
 
   sleep(0.4)
-
   suckDrops()
 
-  local seedSlot = findSeedSlot()
+  local replantSlot = findReplantSlot()
 
-  if not seedSlot then
+  if not replantSlot then
     print("No replant item found. Cannot replant.")
     return
   end
 
-  turtle.select(seedSlot)
+  turtle.select(replantSlot)
 
-  print("Replanting crop.")
+  local item = turtle.getItemDetail(replantSlot)
+  print("Trying to replant with: " .. item.name)
 
   local planted, plantErr = turtle.placeDown()
 
   if not planted then
-    print("Could not replant crop: " .. tostring(plantErr))
+    print("Could not replant: " .. tostring(plantErr))
     return
   end
 
   print("Replanted successfully.")
 
-  dumpNonSeedsForward()
+  dumpNonReplantItemsForward()
 
   print("Cycle complete.")
 end
