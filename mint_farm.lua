@@ -1,10 +1,10 @@
--- auto_crop_farm.lua
--- Universal crop farm for one block below the turtle.
+-- cobblemon_mint_farm.lua
+-- Universal Cobblemon mint farm for one block below the turtle.
 --
 -- Setup:
 -- [ Turtle ]
--- [ Crop   ]
--- [ Farmland ]
+-- [ Mint crop ]
+-- [ Farmland / valid soil ]
 --
 -- Output chest or hopper should be in front of the turtle.
 
@@ -14,24 +14,27 @@ local DEFAULT_HARVEST_AGE = 7
 local RUN_FOREVER = true
 local CHECK_INTERVAL = 30
 
--- Items that can be used for replanting.
--- Add modded seeds here if needed.
-local REPLANT_ITEMS = {
-  "minecraft:wheat_seeds",
-  "minecraft:carrot",
-  "minecraft:potato",
-  "minecraft:beetroot_seeds",
-  "minecraft:nether_wart",
-}
-
--- Some crops have max age 3 instead of 7.
-local CROP_MAX_AGES = {
-  ["minecraft:beetroots"] = 3,
-  ["minecraft:nether_wart"] = 3,
-}
-
 -- If digDown() does not work, try "left" or "right".
 local TOOL_SIDE = nil
+
+-- Crop block -> seed item
+local REPLANT_BY_CROP = {
+  ["cobblemon:red_mint"] = "cobblemon:red_mint_seed",
+  ["cobblemon:blue_mint"] = "cobblemon:blue_mint_seed",
+  ["cobblemon:cyan_mint"] = "cobblemon:cyan_mint_seed",
+  ["cobblemon:pink_mint"] = "cobblemon:pink_mint_seed",
+  ["cobblemon:green_mint"] = "cobblemon:green_mint_seed",
+  ["cobblemon:white_mint"] = "cobblemon:white_mint_seed",
+}
+
+local CROP_MAX_AGES = {
+  ["cobblemon:red_mint"] = 7,
+  ["cobblemon:blue_mint"] = 7,
+  ["cobblemon:cyan_mint"] = 7,
+  ["cobblemon:pink_mint"] = 7,
+  ["cobblemon:green_mint"] = 7,
+  ["cobblemon:white_mint"] = 7,
+}
 
 local function getMaxAge(blockName)
   return CROP_MAX_AGES[blockName] or DEFAULT_HARVEST_AGE
@@ -55,9 +58,9 @@ local function getAge(data)
   return nil
 end
 
-local function isReplantItem(itemName)
-  for _, name in ipairs(REPLANT_ITEMS) do
-    if itemName == name then
+local function isKnownReplantItem(itemName)
+  for _, seedName in pairs(REPLANT_BY_CROP) do
+    if itemName == seedName then
       return true
     end
   end
@@ -73,10 +76,16 @@ local function inspectCropBelow()
     return nil
   end
 
+  if not REPLANT_BY_CROP[data.name] then
+    print("Block below is not a known Cobblemon mint crop.")
+    print("Found: " .. tostring(data.name))
+    return nil
+  end
+
   local age = getAge(data)
 
   if age == nil then
-    print("Block below has no age state.")
+    print("No age state found.")
     print("Block: " .. tostring(data.name))
     print("State: " .. textutils.serialize(data.state))
     return nil
@@ -109,11 +118,17 @@ local function suckDrops()
   end
 end
 
-local function findReplantSlot()
+local function findSeedSlotForCrop(cropName)
+  local neededSeed = REPLANT_BY_CROP[cropName]
+
+  if not neededSeed then
+    return nil
+  end
+
   for slot = 1, 16 do
     local item = turtle.getItemDetail(slot)
 
-    if item and isReplantItem(item.name) then
+    if item and item.name == neededSeed then
       return slot
     end
   end
@@ -121,13 +136,13 @@ local function findReplantSlot()
   return nil
 end
 
-local function dumpNonReplantItemsForward()
-  print("Dumping non-replant items forward.")
+local function dumpNonSeedsForward()
+  print("Dumping non-seed items forward.")
 
   for slot = 1, 16 do
     local item = turtle.getItemDetail(slot)
 
-    if item and not isReplantItem(item.name) then
+    if item and not isKnownReplantItem(item.name) then
       turtle.select(slot)
       turtle.drop()
     end
@@ -153,17 +168,18 @@ local function runCycle()
   sleep(0.4)
   suckDrops()
 
-  local replantSlot = findReplantSlot()
+  local seedSlot = findSeedSlotForCrop(cropName)
 
-  if not replantSlot then
-    print("No replant item found. Cannot replant.")
+  if not seedSlot then
+    print("No matching seed found for: " .. cropName)
+    print("Expected seed: " .. tostring(REPLANT_BY_CROP[cropName]))
     return
   end
 
-  turtle.select(replantSlot)
+  turtle.select(seedSlot)
 
-  local item = turtle.getItemDetail(replantSlot)
-  print("Trying to replant with: " .. item.name)
+  local item = turtle.getItemDetail(seedSlot)
+  print("Replanting with: " .. item.name)
 
   local planted, plantErr = turtle.placeDown()
 
@@ -174,7 +190,7 @@ local function runCycle()
 
   print("Replanted successfully.")
 
-  dumpNonReplantItemsForward()
+  dumpNonSeedsForward()
 
   print("Cycle complete.")
 end
