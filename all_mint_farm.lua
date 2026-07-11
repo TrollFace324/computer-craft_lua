@@ -19,12 +19,12 @@ local TOOL_SIDE = nil
 
 -- Crop block -> seed item
 local REPLANT_BY_CROP = {
-  ["cobblemon:red_mint"] = "cobblemon:red_mint_seed",
-  ["cobblemon:blue_mint"] = "cobblemon:blue_mint_seed",
-  ["cobblemon:cyan_mint"] = "cobblemon:cyan_mint_seed",
-  ["cobblemon:pink_mint"] = "cobblemon:pink_mint_seed",
-  ["cobblemon:green_mint"] = "cobblemon:green_mint_seed",
-  ["cobblemon:white_mint"] = "cobblemon:white_mint_seed",
+  ["cobblemon:red_mint"] = "cobblemon:red_mint_seeds",
+  ["cobblemon:blue_mint"] = "cobblemon:blue_mint_seeds",
+  ["cobblemon:cyan_mint"] = "cobblemon:cyan_mint_seeds",
+  ["cobblemon:pink_mint"] = "cobblemon:pink_mint_seeds",
+  ["cobblemon:green_mint"] = "cobblemon:green_mint_seeds",
+  ["cobblemon:white_mint"] = "cobblemon:white_mint_seeds",
 }
 
 local CROP_MAX_AGES = {
