@@ -1,15 +1,18 @@
--- wheat_farm.lua
--- Turtle setup:
+-- crop_farm.lua
+-- Universal crop farm for one block below the turtle.
+--
+-- Setup:
 -- [ Turtle ]
--- [ Wheat  ]
+-- [ Crop   ]
 -- [ Farmland ]
 --
 -- Output chest or hopper should be in front of the turtle.
--- Put wheat seeds in the turtle inventory before starting.
+-- Put seeds/replant item in the turtle inventory before starting.
 
+local CROP_BLOCK = "minecraft:carrots"
+local SEED_ITEM = "minecraft:carrot"
 local AGE_STATE = "age"
 local HARVEST_AGE = 7
-local SEED_ITEM = "minecraft:wheat_seeds"
 
 local RUN_FOREVER = true
 local CHECK_INTERVAL = 30
@@ -35,7 +38,7 @@ local function getAge(data)
   return nil
 end
 
-local function isMatureWheatBelow()
+local function isMatureCropBelow()
   local ok, data = turtle.inspectDown()
 
   if not ok then
@@ -43,8 +46,10 @@ local function isMatureWheatBelow()
     return false
   end
 
-  if data.name ~= "minecraft:wheat" then
-    print("Block below is not wheat: " .. tostring(data.name))
+  if data.name ~= CROP_BLOCK then
+    print("Block below is not the selected crop.")
+    print("Expected: " .. CROP_BLOCK)
+    print("Found: " .. tostring(data.name))
     return false
   end
 
@@ -57,11 +62,11 @@ local function isMatureWheatBelow()
   end
 
   if age < HARVEST_AGE then
-    print("Wheat is not mature yet: age " .. age .. "/" .. HARVEST_AGE .. ".")
+    print("Crop is not mature yet: age " .. age .. "/" .. HARVEST_AGE .. ".")
     return false
   end
 
-  print("Wheat is mature: age " .. age .. "/" .. HARVEST_AGE .. ".")
+  print("Crop is mature: age " .. age .. "/" .. HARVEST_AGE .. ".")
   return true
 end
 
@@ -93,7 +98,7 @@ local function findSeedSlot()
 end
 
 local function dumpNonSeedsForward()
-  print("Dumping wheat and extra items forward.")
+  print("Dumping crop drops and extra items forward.")
 
   for slot = 1, 16 do
     local item = turtle.getItemDetail(slot)
@@ -106,16 +111,16 @@ local function dumpNonSeedsForward()
 end
 
 local function runCycle()
-  if not isMatureWheatBelow() then
+  if not isMatureCropBelow() then
     return
   end
 
-  print("Harvesting wheat.")
+  print("Harvesting crop.")
 
   local dug, digErr = digDown()
 
   if not dug then
-    print("Could not harvest wheat: " .. tostring(digErr))
+    print("Could not harvest crop: " .. tostring(digErr))
     return
   end
 
@@ -126,18 +131,18 @@ local function runCycle()
   local seedSlot = findSeedSlot()
 
   if not seedSlot then
-    print("No wheat seeds found. Cannot replant.")
+    print("No replant item found. Cannot replant.")
     return
   end
 
   turtle.select(seedSlot)
 
-  print("Replanting wheat seeds.")
+  print("Replanting crop.")
 
   local planted, plantErr = turtle.placeDown()
 
   if not planted then
-    print("Could not replant wheat: " .. tostring(plantErr))
+    print("Could not replant crop: " .. tostring(plantErr))
     return
   end
 
