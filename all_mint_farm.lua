@@ -1,17 +1,20 @@
 -- fast_cobblemon_mint_safe.lua
 -- Fast Cobblemon mint farm.
--- NEVER pulls items from the chest.
--- No turtle.suck(), no turtle.suckDown(), no turtle.suckUp().
+-- NEVER pulls items from the front chest.
+-- Uses turtle.suckDown() only.
 --
 -- Setup:
--- Output chest/hopper is in front of the turtle.
--- Mint crop is directly below the turtle.
+-- [ Output chest ] in front of the turtle
+--
+-- [ Turtle ]
+-- [ Cobblemon mint ]
+-- [ Farmland / soil ]
 
 local AGE_STATE = "age"
 local HARVEST_AGE = 7
 
 local REPLANT_RESERVE = 8
-local PRINT_EVENTS = false
+local PRINT_EVENTS = true
 
 -- If digDown() does not work, try "left" or "right".
 local TOOL_SIDE = nil
@@ -92,6 +95,15 @@ local function isReplantItem(itemName)
   return false
 end
 
+local function collectDropsFromBelow()
+  -- Safe: this does NOT pull from the chest in front.
+  -- It only collects items below the turtle.
+  for i = 1, 4 do
+    turtle.suckDown()
+    sleep(0.05)
+  end
+end
+
 local function findReplantSlot(cropName)
   local possibleItems = MINTS[cropName]
 
@@ -116,7 +128,7 @@ end
 
 local function dumpExtrasForward()
   -- Drops everything forward into the output chest,
-  -- but keeps a small reserve of plantable items.
+  -- but keeps a reserve of plantable mint items.
   local kept = {}
 
   for slot = 1, 16 do
@@ -131,13 +143,22 @@ local function dumpExtrasForward()
 
         if item.count > canKeep then
           local toDrop = item.count - canKeep
-          turtle.drop(toDrop)
+          local ok, err = turtle.drop(toDrop)
+
+          if not ok then
+            print("Could not drop items into chest: " .. tostring(err))
+          end
+
           kept[item.name] = REPLANT_RESERVE
         else
           kept[item.name] = alreadyKept + item.count
         end
       else
-        turtle.drop(item.count)
+        local ok, err = turtle.drop(item.count)
+
+        if not ok then
+          print("Could not drop items into chest: " .. tostring(err))
+        end
       end
     end
   end
@@ -147,6 +168,7 @@ local function harvestIfReady()
   local ok, data = turtle.inspectDown()
 
   if not ok then
+    log("No crop below.")
     return
   end
 
@@ -154,12 +176,14 @@ local function harvestIfReady()
   local replantOptions = MINTS[cropName]
 
   if not replantOptions then
+    log("Unknown crop below: " .. tostring(cropName))
     return
   end
 
   local age = getAge(data)
 
   if age ~= HARVEST_AGE then
+    log("Not mature: " .. cropName .. " age " .. tostring(age) .. "/" .. HARVEST_AGE)
     return
   end
 
@@ -172,8 +196,9 @@ local function harvestIfReady()
     return
   end
 
-  -- No suck commands here.
-  -- The turtle only uses items received directly from digDown().
+  sleep(0.15)
+
+  collectDropsFromBelow()
 
   local replantSlot = findReplantSlot(cropName)
 
@@ -185,10 +210,21 @@ local function harvestIfReady()
       print("- " .. name)
     end
 
+    print("Current inventory:")
+    for slot = 1, 16 do
+      local item = turtle.getItemDetail(slot)
+      if item then
+        print(slot .. ": " .. item.name .. " x" .. item.count)
+      end
+    end
+
     return
   end
 
   turtle.select(replantSlot)
+
+  local item = turtle.getItemDetail(replantSlot)
+  log("Replanting with: " .. item.name)
 
   local planted, plantErr = turtle.placeDown()
 
@@ -196,6 +232,8 @@ local function harvestIfReady()
     print("Could not replant: " .. tostring(plantErr))
     return
   end
+
+  log("Replanted successfully.")
 
   dumpExtrasForward()
 
@@ -209,6 +247,5 @@ while true do
     print("Program error: " .. tostring(err))
   end
 
-  -- Very fast loop, but still yields to ComputerCraft.
   sleep(0)
 end
