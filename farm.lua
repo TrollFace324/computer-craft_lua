@@ -1,37 +1,6 @@
--- cropfarm.lua
--- CC:Tweaked: универсальная ферма обычных культур без поворотов.
---
--- Расположение:
---   спереди — растение;
---   справа  — раздатчик с костной мукой, направленный на растение;
---   сверху  — редстоун-линия к блокирующему поршню;
---   снизу   — сундук для урожая.
---
--- Ножницы НЕ используются и НЕ требуются.
--- Априкорны и их специальный сбор в этой версии отсутствуют.
---
--- Неизвестное растение:
---   костная мука применяется до первого раза, когда age не изменился;
---   текущий age сохраняется как максимальный.
---
--- Известное растение:
---   костная мука применяется только пока текущий age меньше сохранённого;
---   на максимальном age поршень сразу открывается, без проверочного импульса.
---
--- Команды:
---   cropfarm
---   cropfarm list
---   cropfarm inspect
---   cropfarm forget
---   cropfarm reset
---   cropfarm seed
---
--- Для cropfarm seed положите посадочный предмет в выбранный слот
--- и оставьте изученное растение перед черепашкой.
-
 local args = { ... }
 
-local PROGRAM_VERSION = "3.0-crops-only"
+local PROGRAM_VERSION = "3.2-ascii-only"
 local DATABASE_FILE = "crop_profiles_v3.db"
 
 local LOCK_SIDE = "top"
@@ -49,8 +18,6 @@ local RETRY_DELAY = 1.00
 local MAX_LEARNING_PULSES = 256
 local MAX_PULL_OPERATIONS = 64
 
--- Для стандартных культур максимальный age известен заранее.
--- Поэтому их не нужно обучать лишним проверочным импульсом.
 local BUILTIN_CROPS = {
     ["minecraft:wheat"] = {
         growthKey = "age",
@@ -145,7 +112,7 @@ end
 
 local function describeBlock(block)
     if not block then
-        return "воздух"
+        return "air"
     end
 
     return block.name .. " " .. textutils.serialize(block.state or {})
@@ -153,7 +120,7 @@ end
 
 local function describeGrowth(block, profile)
     if not block then
-        return "нет блока"
+        return "no block"
     end
 
     if profile and profile.growthKey then
@@ -197,7 +164,7 @@ local function saveDatabase()
     local handle = fs.open(DATABASE_FILE, "w")
 
     if not handle then
-        error("Не удалось записать " .. DATABASE_FILE)
+        error("Could not write " .. DATABASE_FILE)
     end
 
     handle.write(textutils.serialize(database))
@@ -219,13 +186,13 @@ end
 local function waitForEquipment()
     while not inventoryAt(DISPENSER_SIDE) do
         setLocked(true)
-        status("Справа не найден раздатчик")
+        status("No dispenser found on the right")
         sleep(RETRY_DELAY)
     end
 
     while not inventoryAt(CHEST_SIDE) do
         setLocked(true)
-        status("Снизу не найден сундук")
+        status("No chest found below the turtle")
         sleep(RETRY_DELAY)
     end
 end
@@ -249,7 +216,7 @@ end
 local function waitForBoneMeal()
     while not dispenserHasBoneMeal() do
         setLocked(true)
-        status("Добавь костную муку в раздатчик справа")
+        status("Add bone meal to the dispenser on the right")
         sleep(RETRY_DELAY)
     end
 end
@@ -295,9 +262,9 @@ local function addBuiltinProfile(block)
     saveDatabase()
 
     status(
-        "Известная культура: "
+        "Known crop: "
         .. block.name
-        .. ", максимум "
+        .. ", maximum "
         .. profile.growthKey
         .. "="
         .. tostring(profile.maximum)
@@ -350,7 +317,7 @@ local function learnUnknownPlant(initial)
     local current = initial
 
     status(
-        "Обучаю неизвестное растение "
+        "Learning unknown crop "
         .. initial.name
         .. ": "
         .. describeGrowth(initial, nil)
@@ -366,12 +333,12 @@ local function learnUnknownPlant(initial)
         local after = inspectFront()
 
         if not after then
-            error("Растение исчезло во время обучения")
+            error("The crop disappeared during learning")
         end
 
         if after.name ~= initial.name then
             error(
-                "Во время обучения изменился блок: "
+                "The block changed during learning: "
                 .. initial.name
                 .. " -> "
                 .. after.name
@@ -382,7 +349,7 @@ local function learnUnknownPlant(initial)
             current = after
 
             status(
-                "Обучение: "
+                "Learning: "
                 .. describeGrowth(before, nil)
                 .. " -> "
                 .. describeGrowth(after, nil)
@@ -402,14 +369,14 @@ local function learnUnknownPlant(initial)
 
             if growthKey then
                 status(
-                    "Максимум сохранён: "
+                    "Maximum stored: "
                     .. growthKey
                     .. "="
                     .. tostring(profile.maximum)
                 )
             else
                 status(
-                    "Максимальное состояние сохранено: "
+                    "Maximum state stored: "
                     .. textutils.serialize(profile.matureState)
                 )
             end
@@ -419,9 +386,9 @@ local function learnUnknownPlant(initial)
     end
 
     error(
-        "Не удалось завершить обучение за "
+        "Could not finish learning after "
         .. tostring(MAX_LEARNING_PULSES)
-        .. " импульсов"
+        .. " pulses"
     )
 end
 
@@ -479,10 +446,9 @@ local function growKnownPlant(profile)
             return "different"
         end
 
-        -- Важная проверка выполняется ДО применения костной муки.
         if isMature(before, profile) then
             status(
-                "Рост завершён: "
+                "Growth complete: "
                 .. describeGrowth(before, profile)
             )
             return "mature"
@@ -491,7 +457,7 @@ local function growKnownPlant(profile)
         waitForBoneMeal()
 
         status(
-            "Выращиваю "
+            "Growing "
             .. before.name
             .. ": "
             .. describeGrowth(before, profile)
@@ -509,10 +475,9 @@ local function growKnownPlant(profile)
             return "different"
         end
 
-        -- После импульса зрелость проверяется сразу.
         if isMature(after, profile) then
             status(
-                "Рост завершён: "
+                "Growth complete: "
                 .. describeGrowth(after, profile)
             )
             return "mature"
@@ -549,7 +514,7 @@ end
 
 local function pullFromChest()
     if not dumpInventoryDown() then
-        return false, "Нижний сундук заполнен"
+        return false, "The chest below is full"
     end
 
     local pulls = 0
@@ -671,7 +636,7 @@ local function tryPlant(profile)
     local candidates = sortedPlantingCandidates(profile)
 
     if #candidates == 0 then
-        return false, "В сундуке не найден посадочный предмет"
+        return false, "No planting item was found in the chest"
     end
 
     for _, candidate in ipairs(candidates) do
@@ -696,13 +661,13 @@ local function tryPlant(profile)
             turtle.select(1)
 
             return false,
-                "Посажен другой блок: "
+                "A different block was planted: "
                 .. planted.name
         end
     end
 
     turtle.select(1)
-    return false, "Не удалось посадить найденные предметы"
+    return false, "Could not plant any of the candidate items"
 end
 
 local function replant(profile)
@@ -716,11 +681,11 @@ local function replant(profile)
                 return true
             end
 
-            status("Спереди находится другой блок: " .. front.name)
+            status("A different block is in front: " .. front.name)
             return false
         end
 
-        status("Жду семена в нижнем сундуке")
+        status("Waiting for planting items in the chest below")
 
         local pulled, result = pullFromChest()
 
@@ -733,10 +698,10 @@ local function replant(profile)
             local planted, reason = tryPlant(profile)
 
             if not dumpInventoryDown() then
-                status("Нижний сундук заполнен")
+                status("The chest below is full")
                 sleep(RETRY_DELAY)
             elseif planted then
-                status("Растение посажено")
+                status("Crop planted")
                 return true
             else
                 status(reason)
@@ -750,9 +715,9 @@ local function waitForPlayerHarvest(profile)
     setLocked(false)
 
     status(
-        "Созрело: "
+        "Mature: "
         .. profile.blockName
-        .. ". Поршень открыт, ломай растение"
+        .. ". Piston unlocked; break the crop"
     )
 
     while true do
@@ -803,7 +768,7 @@ end
 
 local function printProfiles()
     if #database.profiles == 0 then
-        print("Изученных культур нет")
+        print("No learned crops")
         return
     end
 
@@ -812,20 +777,20 @@ local function printProfiles()
 
         if profile.growthKey then
             print(
-                "   максимум: "
+                "   maximum: "
                 .. profile.growthKey
                 .. "="
                 .. tostring(profile.maximum)
             )
         else
             print(
-                "   максимум: "
+                "   maximum: "
                 .. textutils.serialize(profile.matureState)
             )
         end
 
-        print("   семя: " .. tostring(profile.seedItem))
-        print("   встроенный профиль: " .. tostring(profile.builtin))
+        print("   planting item: " .. tostring(profile.seedItem))
+        print("   built-in profile: " .. tostring(profile.builtin))
     end
 end
 
@@ -838,21 +803,21 @@ local function commandForget()
     local block = inspectFront()
 
     if not block then
-        print("Спереди нет растения")
+        print("No crop in front")
         return
     end
 
     local _, index = findProfileByName(block.name)
 
     if not index then
-        print("Профиль этого растения не найден")
+        print("No profile found for this crop")
         return
     end
 
     table.remove(database.profiles, index)
     saveDatabase()
 
-    print("Профиль удалён: " .. block.name)
+    print("Profile removed: " .. block.name)
 end
 
 local function commandReset()
@@ -865,21 +830,21 @@ local function commandReset()
         profiles = {}
     }
 
-    print("База профилей удалена")
+    print("Profile database deleted")
 end
 
 local function commandSeed()
     local block = inspectFront()
 
     if not block then
-        print("Спереди нет растения")
+        print("No crop in front")
         return
     end
 
     local profile = findProfileByName(block.name)
 
     if not profile then
-        print("Сначала запусти ферму и создай профиль растения")
+        print("Run the farm first to create a crop profile")
         return
     end
 
@@ -887,14 +852,14 @@ local function commandSeed()
     local detail = turtle.getItemDetail(selectedSlot)
 
     if not detail then
-        print("Выбери слот с посадочным предметом")
+        print("Select a slot containing the planting item")
         return
     end
 
     profile.seedItem = detail.name
     saveDatabase()
 
-    print("Посадочный предмет: " .. detail.name)
+    print("Planting item: " .. detail.name)
 end
 
 local function runCommand()
@@ -929,9 +894,9 @@ local function main()
     setLocked(true)
 
     print("CropFarm " .. PROGRAM_VERSION)
-    print("Ножницы не нужны")
-    print("Черепашка не поворачивается")
-    print("Ctrl+T — остановить")
+    print("Shears are not required")
+    print("The turtle does not rotate")
+    print("Press Ctrl+T to stop")
 
     waitForEquipment()
 
@@ -940,7 +905,7 @@ local function main()
 
         if not block then
             setLocked(false)
-            status("Поставь растение перед черепашкой")
+            status("Place a crop in front of the turtle")
 
             repeat
                 sleep(0.20)
