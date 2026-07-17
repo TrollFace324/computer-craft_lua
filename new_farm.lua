@@ -1,13 +1,11 @@
 local args = { ... }
 
-local PROGRAM_VERSION = "3.2-ascii-only"
+local PROGRAM_VERSION = "3.3-redstone-only"
 local DATABASE_FILE = "crop_profiles_v3.db"
 
 local LOCK_SIDE = "top"
 local DISPENSER_SIDE = "right"
 local CHEST_SIDE = "bottom"
-
-local BONE_MEAL = "minecraft:bone_meal"
 
 local PULSE_TIME = 0.12
 local AFTER_PULSE_DELAY = 0.40
@@ -184,39 +182,9 @@ local function inventoryAt(side)
 end
 
 local function waitForEquipment()
-    while not inventoryAt(DISPENSER_SIDE) do
-        setLocked(true)
-        status("No dispenser found on the right")
-        sleep(RETRY_DELAY)
-    end
-
     while not inventoryAt(CHEST_SIDE) do
         setLocked(true)
         status("No chest found below the turtle")
-        sleep(RETRY_DELAY)
-    end
-end
-
-local function dispenserHasBoneMeal()
-    local dispenser = inventoryAt(DISPENSER_SIDE)
-
-    if not dispenser then
-        return false
-    end
-
-    for _, item in pairs(dispenser.list()) do
-        if item.name == BONE_MEAL and item.count > 0 then
-            return true
-        end
-    end
-
-    return false
-end
-
-local function waitForBoneMeal()
-    while not dispenserHasBoneMeal() do
-        setLocked(true)
-        status("Add bone meal to the dispenser on the right")
         sleep(RETRY_DELAY)
     end
 end
@@ -324,8 +292,6 @@ local function learnUnknownPlant(initial)
     )
 
     for pulseNumber = 1, MAX_LEARNING_PULSES do
-        waitForBoneMeal()
-
         local before = current
 
         pulseBoneMeal()
@@ -453,8 +419,6 @@ local function growKnownPlant(profile)
             )
             return "mature"
         end
-
-        waitForBoneMeal()
 
         status(
             "Growing "
@@ -894,6 +858,8 @@ local function main()
     setLocked(true)
 
     print("CropFarm " .. PROGRAM_VERSION)
+    print("Right side is redstone output only")
+    print("The dispenser may be remote")
     print("Shears are not required")
     print("The turtle does not rotate")
     print("Press Ctrl+T to stop")
