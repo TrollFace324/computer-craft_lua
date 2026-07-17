@@ -5,8 +5,8 @@
 --   back  = output chest
 --   top   = redstone-controlled piston/lock
 --
--- Put bone meal in the dispenser and at least one pair of shears
--- in the turtle inventory. Keep the remaining turtle slots empty.
+-- Put bone meal in the dispenser and minecraft:shears in slot 1.
+-- Slot 1 is permanently reserved. Keep the remaining slots empty.
 --
 -- Commands:
 --   farm          start
@@ -23,16 +23,21 @@ local DISPENSER_SIDE = "right"
 
 local BONE_MEAL = "minecraft:bone_meal"
 local SHEARS = "minecraft:shears"
+local TOOL_SLOT = 1
 
 local REDSTONE_ON_TIME = 0.12
 local DISPENSER_SETTLE_TIME = 0.35
 local PLAYER_POLL_TIME = 0.05
 local CHEST_SETTLE_TIME = 0.40
 
--- A single use of bone meal can occasionally fail on an immature crop.
--- The crop is considered stable only after this many consecutive
--- attempts without any block-state change.
-local STABLE_ATTEMPTS = 12
+-- Learning rule for an UNKNOWN plant only:
+-- use bone meal and compare the growth state after every pulse. The first
+-- pulse which does not change `age` (or the full state when `age` is absent)
+-- records the current state as this plant's maximum growth state.
+--
+-- For a KNOWN plant, no extra confirmation pulse is used: the turtle compares
+-- the current state with the maximum already stored in plant_profiles.db.
+local STABLE_ATTEMPTS = 1
 local MAX_TRAIN_PULSES = 160
 local MAX_INVENTORY_PULLS = 16
 
@@ -120,6 +125,33 @@ local function sameBlock(first, second)
     return first.name == second.name
         and sameTable(first.state, second.state)
 end
+
+-- Returns whether the growth value changed after bone meal. `age` is
+-- authoritative whenever both inspected states expose it. This prevents
+-- unrelated state properties from making a mature plant look as if it grew.
+local function growthChanged(before, after)
+    if not before or not after then
+        return false
+    end
+
+    local beforeAge = (before.state or {}).age
+    local afterAge = (after.state or {}).age
+
+    if beforeAge ~= nil and afterAge ~= nil then
+        return beforeAge ~= afterAge
+    end
+
+    return not sameBlock(before, after)
+end
+
+local function growthDescription(block)
+    if block and block.state and block.state.age ~= nil then
+        return "age=" .. tostring(block.state.age)
+    end
+
+    return textutils.serialize((block and block.state) or {})
+end
+
 
 local function loadDatabase()
     if not fs.exists(DB_FILE) then
@@ -243,8 +275,36 @@ local function findItem(itemName)
     return nil
 end
 
+local function ensureShearsInToolSlot()
+    local tool = turtle.getItemDetail(TOOL_SLOT)
+
+    if tool then
+        if tool.name == SHEARS then
+            return true
+        end
+
+        return false,
+            "Slot 1 is reserved for minecraft:shears; remove "
+            .. tostring(tool.name)
+    end
+
+    local shearsSlot = findItem(SHEARS)
+    if not shearsSlot then
+        return false, "Put minecraft:shears in slot 1"
+    end
+
+    turtle.select(shearsSlot)
+    if not turtle.transferTo(TOOL_SLOT, 1) then
+        return false, "Could not move shears back to slot 1"
+    end
+
+    return true
+end
+
 local function findEmptySlot()
-    for slot = 1, 16 do
+    -- Slot 1 is permanently reserved for shears, even while the shears
+    -- are temporarily inside the dispenser.
+    for slot = 2, 16 do
         if turtle.getItemCount(slot) == 0 then
             return slot
         end
@@ -269,10 +329,10 @@ local function dumpToChestExceptShears()
 
     local allDropped = true
 
-    for slot = 1, 16 do
+    for slot = 2, 16 do
         local detail = turtle.getItemDetail(slot)
 
-        if detail and detail.name ~= SHEARS then
+        if detail then
             turtle.select(slot)
 
             if not turtle.drop() then
@@ -373,7 +433,7 @@ end
 local function restoreNonShearsToFrontInventory()
     local success = true
 
-    for slot = 1, 16 do
+    for slot = 2, 16 do
         local detail = turtle.getItemDetail(slot)
 
         if detail and detail.name ~= SHEARS then
@@ -393,14 +453,16 @@ end
 local function harvestWithDispenserShears(profile)
     setLocked(true)
 
+    local toolReady, toolReason = ensureShearsInToolSlot()
+    if not toolReady then
+        return false, toolReason
+    end
+
     if not dumpToChestExceptShears() then
         return false, "Back chest is full"
     end
 
-    local shearsSlot = findItem(SHEARS)
-    if not shearsSlot then
-        return false, "Put shears in the turtle inventory"
-    end
+    local shearsSlot = TOOL_SLOT
 
     local before = inspectFront()
     if not before then
@@ -437,10 +499,15 @@ local function harvestWithDispenserShears(profile)
     turtle.turnRight()
     pullAllFromFrontInventory(MAX_INVENTORY_PULLS)
     local restored = restoreNonShearsToFrontInventory()
+    local shearsRestored, shearsReason = ensureShearsInToolSlot()
     turtle.turnLeft()
 
     if not restored then
         return false, "Could not restore dispenser contents"
+    end
+
+    if not shearsRestored then
+        return false, shearsReason
     end
 
     local changed = after ~= nil
@@ -615,6 +682,8 @@ local function learnPlant(initial)
             status("Add bone meal to the right dispenser")
             sleep(2)
         else
+            local before = cloneBlock(current)
+
             pulseDispenser()
             pulses = pulses + 1
 
@@ -630,33 +699,42 @@ local function learnPlant(initial)
                 nameChanged = true
             end
 
-            if sameBlock(current, after) then
-                stable = stable + 1
-                status(
-                    "Learning: stable attempt "
-                    .. stable
-                    .. "/"
-                    .. STABLE_ATTEMPTS
-                )
-            else
+            if growthChanged(before, after) then
                 history[#history + 1] = cloneBlock(after)
                 current = cloneBlock(after)
                 stable = 0
 
                 status(
-                    "Learning: new state detected ("
-                    .. #history
-                    .. " states)"
+                    "Learning: growth changed to "
+                    .. growthDescription(after)
+                )
+            else
+                -- The bone meal was actually fired, but `age` did not
+                -- change. This exact state is the learned mature state.
+                current = cloneBlock(after)
+                stable = stable + 1
+
+                status(
+                    "Learning: bone meal did not change growth ("
+                    .. growthDescription(after)
+                    .. ")"
                 )
             end
         end
     end
 
     if stable < STABLE_ATTEMPTS then
-        error("Learning limit reached before a stable state was found")
+        error("Learning limit reached before growth stopped changing")
     end
 
     local growthKeys = inferGrowthKeys(history)
+
+    -- Prefer `age` explicitly whenever the plant exposes it, even if the
+    -- program first encountered the plant already at its mature stage.
+    if current.state and current.state.age ~= nil then
+        growthKeys = { age = true }
+    end
+
     local mature = cloneBlock(current)
 
     local profile = {
@@ -676,8 +754,13 @@ local function learnPlant(initial)
 
     status("Testing whether dispenser shears can harvest it")
 
-    while not findItem(SHEARS) do
-        status("Put shears in the turtle inventory")
+    while true do
+        local ready, reason = ensureShearsInToolSlot()
+        if ready then
+            break
+        end
+
+        status(reason)
         sleep(2)
     end
 
@@ -698,9 +781,9 @@ end
 local function growUntilMature(profile)
     setLocked(true)
 
-    local unchanged = 0
+    local pulses = 0
 
-    while true do
+    while pulses < MAX_TRAIN_PULSES do
         local before = inspectFront()
 
         if not before then
@@ -711,7 +794,14 @@ local function growUntilMature(profile)
             return false, "different"
         end
 
+        -- This is a KNOWN plant. Its maximum growth state was already learned,
+        -- so reaching that state is enough: do not spend one more bone meal to
+        -- confirm that `age` no longer changes.
         if isMature(before, profile) then
+            status(
+                "Mature at learned maximum: "
+                .. growthDescription(before)
+            )
             return true
         end
 
@@ -721,8 +811,18 @@ local function growUntilMature(profile)
             status("Add bone meal to the right dispenser")
             sleep(2)
         else
-            status("Growing " .. before.name)
+            status(
+                "Growing known plant "
+                .. before.name
+                .. " (current "
+                .. growthDescription(before)
+                .. ", target "
+                .. growthDescription({ state = profile.matureState })
+                .. ")"
+            )
+
             pulseDispenser()
+            pulses = pulses + 1
 
             local after = inspectFront()
 
@@ -730,22 +830,37 @@ local function growUntilMature(profile)
                 return false, "missing"
             end
 
-            if sameBlock(before, after) then
-                unchanged = unchanged + 1
+            if not profileMatchesBlock(profile, after) then
+                return false, "different"
+            end
 
-                if unchanged >= STABLE_ATTEMPTS then
-                    status(
-                        "Plant is not at learned maximum, "
-                        .. "but bone meal changes nothing"
-                    )
-                    sleep(2)
-                    unchanged = 0
-                end
+            if isMature(after, profile) then
+                status(
+                    "Reached learned maximum: "
+                    .. growthDescription(after)
+                )
+                return true
+            end
+
+            if growthChanged(before, after) then
+                status(
+                    "Growth changed: "
+                    .. growthDescription(before)
+                    .. " -> "
+                    .. growthDescription(after)
+                )
             else
-                unchanged = 0
+                -- A known plant may occasionally ignore bone meal before its
+                -- saved maximum. That does not redefine maturity; try again.
+                status(
+                    "No growth this pulse, but saved maximum is not reached"
+                )
+                sleep(0.20)
             end
         end
     end
+
+    return false, "growth_limit"
 end
 
 local function waitForPlayerHarvest(profile)
@@ -877,10 +992,10 @@ end
 local function sortedPlantingSlots(profile)
     local candidates = {}
 
-    for slot = 1, 16 do
+    for slot = 2, 16 do
         local detail = turtle.getItemDetail(slot)
 
-        if detail and detail.name ~= SHEARS then
+        if detail then
             local score = candidateScore(detail.name, profile)
 
             if profile.seedItem then
@@ -982,7 +1097,10 @@ local function runProfile(profile)
             replantFromChest(profile)
         elseif not profileMatchesBlock(profile, block) then
             return
-        elseif not isMature(block, profile) then
+        else
+            -- For a known profile, compare against the maximum learned during
+            -- its first encounter. Only unknown plants use the final
+            -- bone-meal pulse which produces no `age` change.
             local grown, reason = growUntilMature(profile)
 
             if not grown then
@@ -990,31 +1108,37 @@ local function runProfile(profile)
                     return
                 elseif reason == "missing" then
                     replantFromChest(profile)
+                elseif reason == "growth_limit" then
+                    status("Growth pulse limit reached")
+                    sleep(2)
                 end
-            end
-        elseif profile.mode == "self" then
-            setLocked(true)
-            status("Mature: automatic dispenser-shears harvest")
+            elseif profile.mode == "self" then
+                setLocked(true)
+                status("Mature: automatic dispenser-shears harvest")
 
-            local harvested, reason = harvestWithDispenserShears(profile)
+                local harvested, harvestReason =
+                    harvestWithDispenserShears(profile)
 
-            if not harvested then
-                status(
-                    "Automatic harvest failed: "
-                    .. tostring(reason or "state did not change")
-                )
-                sleep(2)
+                if not harvested then
+                    status(
+                        "Automatic harvest failed: "
+                        .. tostring(
+                            harvestReason or "state did not change"
+                        )
+                    )
+                    sleep(2)
+                else
+                    sleep(0.15)
+                end
             else
-                sleep(0.15)
-            end
-        else
-            local after = waitForPlayerHarvest(profile)
+                local after = waitForPlayerHarvest(profile)
 
-            if not after then
-                replantFromChest(profile)
+                if not after then
+                    replantFromChest(profile)
+                end
+                -- If a lower part remains (for example, a two-block crop),
+                -- the next loop grows that remaining plant again.
             end
-            -- If a lower part remains (for example, a two-block crop),
-            -- the next loop grows that remaining plant again.
         end
 
         sleep(0.05)
@@ -1087,6 +1211,16 @@ end
 
 setLocked(true)
 redstone.setOutput(DISPENSER_SIDE, false)
+
+while true do
+    local ready, reason = ensureShearsInToolSlot()
+    if ready then
+        break
+    end
+
+    status(reason)
+    sleep(2)
+end
 
 print("Adaptive crop controller started")
 print("Press Ctrl+T to stop")
