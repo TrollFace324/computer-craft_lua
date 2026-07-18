@@ -1,7 +1,7 @@
 local args = { ... }
 
-local PROGRAM_VERSION = "5.0.1-off-left-on"
-local DATABASE_FILE = "crop_profiles_v4_1.db"
+local PROGRAM_VERSION = "5.1-berry-learning"
+local DATABASE_FILE = "crop_profiles_v5_1.db"
 
 local PLACEMENT_ACCESS_SIDE = "left"
 local MANUAL_HARVEST_SIDE = "top"
@@ -20,7 +20,9 @@ local PLACEMENT_HATCH_CLOSE_DELAY = 0.10
 local GROWTH_SIGNAL_ON_TIME = 4.00
 local GROWTH_SIGNAL_OFF_TIME = 4.00
 
-local MAX_LEARNING_PULSES = 256
+local MAX_LEARNING_PULSES = 2048
+local UNKNOWN_MAX_NO_CHANGE_ATTEMPTS = 8
+
 local MIN_EMPTY_SLOTS_BEFORE_HARVEST = 3
 local SHUTDOWN_PICKUP_QUIET_PASSES = 8
 local SHUTDOWN_PICKUP_MAX_PASSES = 96
@@ -59,7 +61,7 @@ local BUILTIN_CROPS = {
 }
 
 local database = {
-    version = 4,
+    version = 5,
     profiles = {}
 }
 
@@ -387,6 +389,7 @@ local function learnUnknownPlant(initial)
 
     local growthKey = detectGrowthKey(initial)
     local current = initial
+    local noChangeAttempts = 0
 
     status(
         "Learning unknown crop "
@@ -419,6 +422,7 @@ local function learnUnknownPlant(initial)
 
         if not sameGrowth(before, after, growthKey) then
             current = after
+            noChangeAttempts = 0
 
             status(
                 "Learning: "
@@ -427,34 +431,53 @@ local function learnUnknownPlant(initial)
                 .. describeGrowth(after, nil)
             )
         else
-            local profile = {
-                blockName = initial.name,
-                growthKey = growthKey,
-                maximum = growthKey and after.state[growthKey] or nil,
-                matureState = growthKey and nil or copyTable(after.state),
-                seedItem = nil,
-                manualHarvest = true,
-                builtin = false
-            }
+            noChangeAttempts = noChangeAttempts + 1
+            current = after
 
-            database.profiles[#database.profiles + 1] = profile
-            saveDatabase()
+            status(
+                "Learning: no growth change at "
+                .. describeGrowth(after, nil)
+                .. " ("
+                .. tostring(noChangeAttempts)
+                .. "/"
+                .. tostring(UNKNOWN_MAX_NO_CHANGE_ATTEMPTS)
+                .. ")"
+            )
 
-            if growthKey then
-                status(
-                    "Maximum stored: "
-                    .. growthKey
-                    .. "="
-                    .. tostring(profile.maximum)
-                )
-            else
-                status(
-                    "Maximum state stored: "
-                    .. textutils.serialize(profile.matureState)
-                )
+            -- A single bone-meal failure is not enough to mark a berry
+            -- or another modded crop as mature. The current state is
+            -- accepted as maximum only after several consecutive uses
+            -- without any growth-state change.
+            if noChangeAttempts >= UNKNOWN_MAX_NO_CHANGE_ATTEMPTS then
+                local profile = {
+                    blockName = initial.name,
+                    growthKey = growthKey,
+                    maximum = growthKey and after.state[growthKey] or nil,
+                    matureState = growthKey and nil or copyTable(after.state),
+                    seedItem = nil,
+                    manualHarvest = true,
+                    builtin = false
+                }
+
+                database.profiles[#database.profiles + 1] = profile
+                saveDatabase()
+
+                if growthKey then
+                    status(
+                        "Maximum stored: "
+                        .. growthKey
+                        .. "="
+                        .. tostring(profile.maximum)
+                    )
+                else
+                    status(
+                        "Maximum state stored: "
+                        .. textutils.serialize(profile.matureState)
+                    )
+                end
+
+                return profile
             end
-
-            return profile
         end
     end
 
@@ -681,6 +704,19 @@ local function collectAllFrontDrops()
 
     compactInventory()
     turtle.select(1)
+end
+
+local function collectOneFrontItemWhilePoweredOff()
+    turtle.select(1)
+
+    local picked = turtle.suck()
+
+    if picked then
+        compactInventory()
+    end
+
+    turtle.select(1)
+    return picked
 end
 
 local function enterPoweredOffState()
@@ -1104,7 +1140,7 @@ local function commandReset()
     end
 
     database = {
-        version = 4,
+        version = 5,
         profiles = {}
     }
 
@@ -1216,13 +1252,15 @@ local function farmLoop()
             end
 
             while not powerEnabled do
-                -- Powered-off state must continuously keep the left
-                -- placement-access output enabled.
+                -- Powered-off state continuously keeps the left output
+                -- enabled and tries to collect item entities from the
+                -- front. turtle.suck() does not break a planted crop.
                 setPlacementAccess(true)
                 stopDispenser()
                 setManualHarvestPulses(false)
                 redstone.setOutput(MANUAL_HARVEST_SIDE, false)
 
+                collectOneFrontItemWhilePoweredOff()
                 sleep(GAME_TICK)
             end
         else
@@ -1260,8 +1298,10 @@ local function main()
     print("Back redstone controls working power")
     print("Back OFF during work: break crop, collect drops, enter idle")
     print("While OFF, the left output stays continuously ON")
+    print("While OFF, the turtle continuously tries to suck front items")
     print("A crop placed while OFF is left untouched")
     print("Back ON: resume work with the crop currently in front")
+    print("Unknown crops need 8 unchanged growth attempts to learn maximum")
     print("Right bone-meal signal: 0.50s on, 0.15s off")
     print("Left is continuously ON whenever the crop position is empty")
     print("Left is ON while empty or while the crop is mature")
