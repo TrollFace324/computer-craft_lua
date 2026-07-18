@@ -1,6 +1,6 @@
 local args = { ... }
 
-local PROGRAM_VERSION = "4.11-square-wave"
+local PROGRAM_VERSION = "4.12-close-before-plant"
 local DATABASE_FILE = "crop_profiles_v4_1.db"
 
 local PLACEMENT_ACCESS_SIDE = "left"
@@ -14,6 +14,7 @@ local BONE_MEAL_RESET_TIME = 0.15
 
 local PLAYER_CHECK_DELAY = GAME_TICK
 local RETRY_DELAY = GAME_TICK
+local PLACEMENT_HATCH_CLOSE_DELAY = 0.10
 
 local GROWTH_SIGNAL_ON_TIME = 4.00
 local GROWTH_SIGNAL_OFF_TIME = 4.00
@@ -696,6 +697,10 @@ local function sortedPlantingCandidates(profile)
 end
 
 local function placeFromSlot(profile, slot, itemName)
+    -- Close the player's placement hatch before planting.
+    setPlacementAccess(false)
+    sleep(PLACEMENT_HATCH_CLOSE_DELAY)
+
     turtle.select(slot)
 
     local placed, reason = turtle.place()
@@ -1090,6 +1095,8 @@ local function main()
     print("Right bone-meal signal: 0.50s on, 0.15s off")
     print("Left is continuously ON whenever the crop position is empty")
     print("Left is ON while empty or while the crop is mature")
+    print("Left turns OFF before the turtle plants a seed")
+    print("Planting waits 0.10s for the hatch to close")
     print("Top growth signal: 4.00s ON, 4.00s OFF")
     print("Top signal stops immediately at maturity")
     print("Top signal restarts after planting")
