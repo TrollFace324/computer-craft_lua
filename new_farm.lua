@@ -1,6 +1,6 @@
 local args = { ... }
 
-local PROGRAM_VERSION = "4.8.1-empty-left-fix"
+local PROGRAM_VERSION = "4.9-mature-left-4s"
 local DATABASE_FILE = "crop_profiles_v4_1.db"
 
 local PLACEMENT_ACCESS_SIDE = "left"
@@ -15,7 +15,7 @@ local BONE_MEAL_RESET_TIME = 0.15
 local PLAYER_CHECK_DELAY = GAME_TICK
 local RETRY_DELAY = GAME_TICK
 
-local MANUAL_HARVEST_PULSE_INTERVAL = 1.50
+local MANUAL_HARVEST_PULSE_INTERVAL = 4.00
 local MANUAL_HARVEST_PULSE_TIME = 0.10
 
 local MAX_LEARNING_PULSES = 256
@@ -835,7 +835,8 @@ local function replant(profile)
 end
 
 local function waitForPlayerHarvest(profile)
-    setPlacementAccess(false)
+    -- A mature crop must be accessible to the player.
+    setPlacementAccess(true)
     setManualHarvestPulses(profile.manualHarvest)
 
     collectAvailableFrontDrops(8)
@@ -853,7 +854,7 @@ local function waitForPlayerHarvest(profile)
     status(
         "Mature: "
         .. profile.blockName
-        .. ". Waiting for the player to break it"
+        .. ". Left access is ON; waiting for the player to break it"
     )
 
     while true do
@@ -865,6 +866,7 @@ local function waitForPlayerHarvest(profile)
             or current.name ~= profile.blockName
             or not isMature(current, profile) then
 
+            setPlacementAccess(false)
             setManualHarvestPulses(false)
             return
         end
@@ -1066,8 +1068,8 @@ local function main()
     print("CropFarm " .. PROGRAM_VERSION)
     print("Right bone-meal signal: 0.50s on, 0.15s off")
     print("Left is continuously ON whenever the crop position is empty")
-    print("Left turns off when a crop appears")
-    print("Top pulses every 1.50s for player-harvest crops")
+    print("Left is ON while empty or while the crop is mature")
+    print("Top pulses every 4.00s for player-harvest crops")
     print("Top pulse width: 0.10s")
     print("No chest is used")
     print("The turtle does not rotate")
