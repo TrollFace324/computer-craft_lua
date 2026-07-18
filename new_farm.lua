@@ -1,21 +1,23 @@
 local args = { ... }
 
-local PROGRAM_VERSION = "4.2-compact-pickup"
+local PROGRAM_VERSION = "4.3-inverted-fast"
 local DATABASE_FILE = "crop_profiles_v4_1.db"
 
 local LOCK_SIDE = "top"
 local DISPENSER_SIDE = "right"
 
-local PULSE_TIME = 0.12
-local AFTER_PULSE_DELAY = 0.40
-local PLAYER_CHECK_DELAY = 0.05
-local DROP_SETTLE_DELAY = 0.35
-local RETRY_DELAY = 1.00
-local PICKUP_RETRY_DELAY = 0.08
+local TICK = 0.05
+
+local PULSE_TIME = TICK
+local AFTER_PULSE_DELAY = TICK
+local PLAYER_CHECK_DELAY = TICK
+local DROP_SETTLE_DELAY = 0
+local RETRY_DELAY = TICK
+local PICKUP_RETRY_DELAY = TICK
 
 local MAX_LEARNING_PULSES = 256
-local MAX_PICKUP_PASSES = 96
-local PICKUP_QUIET_PASSES = 8
+local MAX_PICKUP_PASSES = 32
+local PICKUP_QUIET_PASSES = 3
 local MIN_EMPTY_SLOTS_BEFORE_HARVEST = 3
 
 local BUILTIN_CROPS = {
@@ -61,7 +63,7 @@ local function status(message)
 end
 
 local function setLocked(locked)
-    redstone.setOutput(LOCK_SIDE, locked)
+    redstone.setOutput(LOCK_SIDE, not locked)
 end
 
 local function stopDispenser()
@@ -173,7 +175,6 @@ end
 
 local function pulseBoneMeal()
     stopDispenser()
-    sleep(0.05)
 
     redstone.setOutput(DISPENSER_SIDE, true)
     sleep(PULSE_TIME)
@@ -525,7 +526,6 @@ local function collectFrontDrops(profile)
         if picked then
             pickedAnything = true
             quietPasses = 0
-            sleep(0.02)
         else
             quietPasses = quietPasses + 1
             sleep(PICKUP_RETRY_DELAY)
@@ -634,7 +634,7 @@ end
 local function placeFromSlot(profile, slot, itemName)
     turtle.select(slot)
     turtle.place()
-    sleep(0.20)
+    sleep(TICK)
 
     local planted = inspectFront()
 
@@ -798,7 +798,7 @@ local function runProfile(profile)
             end
         end
 
-        sleep(0.05)
+        sleep(0)
     end
 end
 
@@ -930,7 +930,8 @@ local function main()
     setLocked(true)
 
     print("CropFarm " .. PROGRAM_VERSION)
-    print("Right side is redstone output only")
+    print("Top piston output is inverted")
+    print("Fast mode: one-tick redstone and block checks")
     print("Drops reuse matching stacks and are compacted")
     print("The exact saved planting item is used for the active crop")
     print("No chest is used")
@@ -945,7 +946,7 @@ local function main()
             status("Place a crop in front of the turtle")
 
             repeat
-                sleep(0.20)
+                sleep(TICK)
                 block = inspectFront()
             until block
 
