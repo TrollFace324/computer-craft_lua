@@ -1,7 +1,7 @@
 local args = { ... }
 
-local PROGRAM_VERSION = "4.0-front-pickup"
-local DATABASE_FILE = "crop_profiles_v4.db"
+local PROGRAM_VERSION = "4.1-exact-seed"
+local DATABASE_FILE = "crop_profiles_v4_1.db"
 
 local LOCK_SIDE = "top"
 local DISPENSER_SIDE = "right"
@@ -16,7 +16,7 @@ local PICKUP_RETRY_DELAY = 0.08
 local MAX_LEARNING_PULSES = 256
 local MAX_PICKUP_PASSES = 96
 local PICKUP_QUIET_PASSES = 8
-local MIN_EMPTY_SLOTS_BEFORE_HARVEST = 2
+local MIN_EMPTY_SLOTS_BEFORE_HARVEST = 3
 
 local BUILTIN_CROPS = {
     ["minecraft:wheat"] = {
@@ -453,34 +453,87 @@ local function countEmptySlots()
     return count
 end
 
-local function collectFrontDrops()
+local function findExactItemSlot(itemName)
+    if not itemName then
+        return nil
+    end
+
+    for slot = 1, 16 do
+        local detail = turtle.getItemDetail(slot)
+
+        if detail and detail.name == itemName then
+            return slot
+        end
+    end
+
+    return nil
+end
+
+local function findPartialStackSlot()
+    for slot = 1, 16 do
+        local detail = turtle.getItemDetail(slot)
+
+        if detail and turtle.getItemCount(slot) < turtle.getItemLimit(slot) then
+            return slot
+        end
+    end
+
+    return nil
+end
+
+local function collectFrontDrops(profile)
     local quietPasses = 0
     local totalPasses = 0
     local pickedAnything = false
+
+    local activeSlot = findEmptySlot()
+
+    if not activeSlot then
+        activeSlot = findExactItemSlot(profile and profile.seedItem)
+            or findPartialStackSlot()
+    end
 
     while quietPasses < PICKUP_QUIET_PASSES
         and totalPasses < MAX_PICKUP_PASSES do
 
         totalPasses = totalPasses + 1
-        local pickedThisPass = false
 
-        for slot = 1, 16 do
-            turtle.select(slot)
+        if not activeSlot then
+            status("Turtle inventory is full; remove harvested items")
+            break
+        end
 
-            local picked = turtle.suck()
+        turtle.select(activeSlot)
 
-            if picked then
-                pickedThisPass = true
-                pickedAnything = true
-                sleep(0.02)
+        local wasEmpty = turtle.getItemCount(activeSlot) == 0
+        local picked = turtle.suck()
+
+        if picked then
+            pickedAnything = true
+            quietPasses = 0
+            sleep(0.02)
+        else
+            local isStillEmpty = turtle.getItemCount(activeSlot) == 0
+
+            if wasEmpty and isStillEmpty then
+                quietPasses = quietPasses + 1
+                sleep(PICKUP_RETRY_DELAY)
+            else
+                local nextSlot = findEmptySlot()
+
+                if nextSlot and nextSlot ~= activeSlot then
+                    activeSlot = nextSlot
+                else
+                    quietPasses = quietPasses + 1
+                    sleep(PICKUP_RETRY_DELAY)
+                end
             end
         end
 
-        if pickedThisPass then
-            quietPasses = 0
-        else
-            quietPasses = quietPasses + 1
-            sleep(PICKUP_RETRY_DELAY)
+        if turtle.getItemCount(activeSlot) >= turtle.getItemLimit(activeSlot) then
+            activeSlot = findEmptySlot()
+                or findExactItemSlot(profile and profile.seedItem)
+                or findPartialStackSlot()
         end
     end
 
@@ -581,7 +634,50 @@ local function sortedPlantingCandidates(profile)
     return result
 end
 
+local function placeFromSlot(profile, slot, itemName)
+    turtle.select(slot)
+    turtle.place()
+    sleep(0.20)
+
+    local planted = inspectFront()
+
+    if not planted then
+        turtle.select(1)
+        return false, "Could not plant " .. itemName
+    end
+
+    if planted.name ~= profile.blockName then
+        turtle.select(1)
+
+        return false,
+            "A different block was planted: "
+            .. planted.name
+    end
+
+    if profile.seedItem ~= itemName then
+        profile.seedItem = itemName
+        saveDatabase()
+    end
+
+    turtle.select(1)
+    return true
+end
+
 local function tryPlant(profile)
+    if profile.seedItem then
+        local exactSlot = findExactItemSlot(profile.seedItem)
+
+        if not exactSlot then
+            return false,
+                "Missing planting item for "
+                .. profile.blockName
+                .. ": "
+                .. profile.seedItem
+        end
+
+        return placeFromSlot(profile, exactSlot, profile.seedItem)
+    end
+
     local candidates = sortedPlantingCandidates(profile)
 
     if #candidates == 0 then
@@ -589,29 +685,15 @@ local function tryPlant(profile)
     end
 
     for _, candidate in ipairs(candidates) do
-        turtle.select(candidate.slot)
-
-        turtle.place()
-        sleep(0.20)
-
-        local planted = inspectFront()
+        local planted, reason =
+            placeFromSlot(profile, candidate.slot, candidate.name)
 
         if planted then
-            if planted.name == profile.blockName then
-                if profile.seedItem ~= candidate.name then
-                    profile.seedItem = candidate.name
-                    saveDatabase()
-                end
+            return true
+        end
 
-                turtle.select(1)
-                return true
-            end
-
-            turtle.select(1)
-
-            return false,
-                "A different block was planted: "
-                .. planted.name
+        if inspectFront() then
+            return false, reason
         end
     end
 
@@ -634,7 +716,7 @@ local function replant(profile)
             return false
         end
 
-        collectFrontDrops()
+        collectFrontDrops(profile)
 
         local planted, reason = tryPlant(profile)
 
@@ -687,7 +769,7 @@ local function waitForPlayerHarvest(profile)
 
             setLocked(true)
             sleep(DROP_SETTLE_DELAY)
-            collectFrontDrops()
+            collectFrontDrops(profile)
             return
         end
     end
@@ -852,9 +934,9 @@ local function main()
 
     print("CropFarm " .. PROGRAM_VERSION)
     print("Right side is redstone output only")
-    print("Drops are collected directly from the front")
+    print("Drops are collected one inventory slot at a time")
+    print("The exact saved planting item is used for the active crop")
     print("No chest is used")
-    print("The turtle stores and replants items itself")
     print("The turtle does not rotate")
     print("Press Ctrl+T to stop")
 
