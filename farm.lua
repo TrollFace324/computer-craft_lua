@@ -1,21 +1,22 @@
 local args = { ... }
 
-local PROGRAM_VERSION = "4.7-left-access-pulse"
+local PROGRAM_VERSION = "4.8.1-empty-left-fix"
 local DATABASE_FILE = "crop_profiles_v4_1.db"
 
-local ACCESS_SIDE = "left"
+local PLACEMENT_ACCESS_SIDE = "left"
+local MANUAL_HARVEST_SIDE = "top"
 local DISPENSER_SIDE = "right"
 
 local GAME_TICK = 0.05
-local REDSTONE_TICK = 0.10
 
-local PULSE_TIME = REDSTONE_TICK
-local AFTER_PULSE_DELAY = REDSTONE_TICK
+local BONE_MEAL_SIGNAL_TIME = 0.50
+local BONE_MEAL_RESET_TIME = 0.15
+
 local PLAYER_CHECK_DELAY = GAME_TICK
 local RETRY_DELAY = GAME_TICK
 
-local ACCESS_PULSE_INTERVAL = 1.50
-local ACCESS_PULSE_TIME = 0.10
+local MANUAL_HARVEST_PULSE_INTERVAL = 1.50
+local MANUAL_HARVEST_PULSE_TIME = 0.10
 
 local MAX_LEARNING_PULSES = 256
 local MIN_EMPTY_SLOTS_BEFORE_HARVEST = 3
@@ -24,27 +25,32 @@ local BUILTIN_CROPS = {
     ["minecraft:wheat"] = {
         growthKey = "age",
         maximum = 7,
-        seedItem = "minecraft:wheat_seeds"
+        seedItem = "minecraft:wheat_seeds",
+        manualHarvest = true
     },
     ["minecraft:carrots"] = {
         growthKey = "age",
         maximum = 7,
-        seedItem = "minecraft:carrot"
+        seedItem = "minecraft:carrot",
+        manualHarvest = true
     },
     ["minecraft:potatoes"] = {
         growthKey = "age",
         maximum = 7,
-        seedItem = "minecraft:potato"
+        seedItem = "minecraft:potato",
+        manualHarvest = true
     },
     ["minecraft:beetroots"] = {
         growthKey = "age",
         maximum = 3,
-        seedItem = "minecraft:beetroot_seeds"
+        seedItem = "minecraft:beetroot_seeds",
+        manualHarvest = true
     },
     ["minecraft:nether_wart"] = {
         growthKey = "age",
         maximum = 3,
-        seedItem = "minecraft:nether_wart"
+        seedItem = "minecraft:nether_wart",
+        manualHarvest = true
     }
 }
 
@@ -62,14 +68,63 @@ local function status(message)
     end
 end
 
-local function disablePlayerAccess()
-    redstone.setOutput(ACCESS_SIDE, false)
+local manualHarvestPulsesEnabled = false
+
+local function setPlacementAccess(open)
+    redstone.setOutput(PLACEMENT_ACCESS_SIDE, open)
 end
 
-local function pulsePlayerAccess()
-    redstone.setOutput(ACCESS_SIDE, true)
-    sleep(ACCESS_PULSE_TIME)
-    redstone.setOutput(ACCESS_SIDE, false)
+local function setManualHarvestPulses(enabled)
+    enabled = enabled == true
+
+    if manualHarvestPulsesEnabled == enabled then
+        return
+    end
+
+    manualHarvestPulsesEnabled = enabled
+
+    if not enabled then
+        redstone.setOutput(MANUAL_HARVEST_SIDE, false)
+    end
+
+    os.queueEvent("manual_harvest_pulse_state")
+end
+
+local function manualHarvestPulseLoop()
+    redstone.setOutput(MANUAL_HARVEST_SIDE, false)
+
+    while true do
+        while not manualHarvestPulsesEnabled do
+            os.pullEvent("manual_harvest_pulse_state")
+        end
+
+        if manualHarvestPulsesEnabled then
+            redstone.setOutput(MANUAL_HARVEST_SIDE, true)
+            sleep(MANUAL_HARVEST_PULSE_TIME)
+            redstone.setOutput(MANUAL_HARVEST_SIDE, false)
+        end
+
+        if manualHarvestPulsesEnabled then
+            local waitTime =
+                MANUAL_HARVEST_PULSE_INTERVAL
+                - MANUAL_HARVEST_PULSE_TIME
+
+            local timer = os.startTimer(math.max(waitTime, 0))
+
+            while manualHarvestPulsesEnabled do
+                local event, id = os.pullEvent()
+
+                if event == "timer" and id == timer then
+                    break
+                end
+
+                if event == "manual_harvest_pulse_state"
+                    and not manualHarvestPulsesEnabled then
+                    break
+                end
+            end
+        end
+    end
 end
 
 local function stopDispenser()
@@ -181,10 +236,10 @@ end
 
 local function pulseBoneMeal()
     redstone.setOutput(DISPENSER_SIDE, true)
-    sleep(PULSE_TIME)
+    sleep(BONE_MEAL_SIGNAL_TIME)
 
     stopDispenser()
-    sleep(AFTER_PULSE_DELAY)
+    sleep(BONE_MEAL_RESET_TIME)
 end
 
 local function findProfileByName(blockName)
@@ -210,6 +265,7 @@ local function addBuiltinProfile(block)
         maximum = definition.maximum,
         matureState = nil,
         seedItem = definition.seedItem,
+        manualHarvest = definition.manualHarvest == true,
         builtin = true
     }
 
@@ -266,7 +322,7 @@ local function detectGrowthKey(block)
 end
 
 local function learnUnknownPlant(initial)
-    disablePlayerAccess()
+    setPlacementAccess(false)
 
     local growthKey = detectGrowthKey(initial)
     local current = initial
@@ -314,6 +370,7 @@ local function learnUnknownPlant(initial)
                 maximum = growthKey and after.state[growthKey] or nil,
                 matureState = growthKey and nil or copyTable(after.state),
                 seedItem = nil,
+                manualHarvest = true,
                 builtin = false
             }
 
@@ -349,6 +406,11 @@ local function getOrCreateProfile(block)
     local profile = findProfileByName(block.name)
 
     if profile then
+        if profile.manualHarvest == nil then
+            profile.manualHarvest = true
+            saveDatabase()
+        end
+
         return profile
     end
 
@@ -388,7 +450,7 @@ end
 local collectAvailableFrontDrops
 
 local function growKnownPlant(profile)
-    disablePlayerAccess()
+    setPlacementAccess(false)
 
     while true do
         local before = inspectFront()
@@ -695,13 +757,16 @@ local function tryPlant(profile)
 end
 
 local function replant(profile)
-    disablePlayerAccess()
+    setManualHarvestPulses(false)
 
     while true do
         local front = inspectFront()
 
         if front then
+            setPlacementAccess(false)
+
             if front.name == profile.blockName then
+                setManualHarvestPulses(profile.manualHarvest)
                 return true
             end
 
@@ -709,9 +774,15 @@ local function replant(profile)
             return false
         end
 
+        -- Keep the left output powered for the entire time that the
+        -- planting position is empty.
+        setPlacementAccess(true)
+
         local planted, reason = tryPlant(profile)
 
         if planted then
+            setPlacementAccess(false)
+            setManualHarvestPulses(profile.manualHarvest)
             status("Crop planted")
             return true
         end
@@ -719,21 +790,43 @@ local function replant(profile)
         local picked = suckFrontOnce()
 
         if picked then
-            -- Re-check the exact planting item immediately, with no delay.
             local plantedAfterPickup = tryPlant(profile)
 
             if plantedAfterPickup then
+                setPlacementAccess(false)
+                setManualHarvestPulses(profile.manualHarvest)
                 status("Crop planted")
                 return true
             end
         else
+            local manuallyPlaced = inspectFront()
+
+            if manuallyPlaced then
+                setPlacementAccess(false)
+
+                if manuallyPlaced.name == profile.blockName then
+                    setManualHarvestPulses(profile.manualHarvest)
+                    status("Crop detected")
+                    return true
+                end
+
+                status(
+                    "A different block is in front: "
+                    .. manuallyPlaced.name
+                )
+                return false
+            end
+
             if countEmptySlots() == 0 then
                 status(
-                    "Turtle inventory is full and the planting item is missing; "
-                    .. "remove some harvested items"
+                    "Crop position is empty; left access is ON. "
+                    .. "Inventory is full and the planting item is missing"
                 )
             else
-                status(reason .. "; waiting for the exact planting item")
+                status(
+                    "Crop position is empty; left access is ON. "
+                    .. tostring(reason)
+                )
             end
 
             sleep(GAME_TICK)
@@ -742,7 +835,8 @@ local function replant(profile)
 end
 
 local function waitForPlayerHarvest(profile)
-    disablePlayerAccess()
+    setPlacementAccess(false)
+    setManualHarvestPulses(profile.manualHarvest)
 
     collectAvailableFrontDrops(8)
     compactInventory()
@@ -759,33 +853,20 @@ local function waitForPlayerHarvest(profile)
     status(
         "Mature: "
         .. profile.blockName
-        .. ". Sending left access pulses every 1.5 seconds"
+        .. ". Waiting for the player to break it"
     )
 
-    local nextPulseAt = 0
-
     while true do
+        sleep(PLAYER_CHECK_DELAY)
+
         local current = inspectFront()
 
         if not current
             or current.name ~= profile.blockName
             or not isMature(current, profile) then
 
-            disablePlayerAccess()
+            setManualHarvestPulses(false)
             return
-        end
-
-        local now = os.clock()
-
-        if now >= nextPulseAt then
-            local pulseStartedAt = now
-
-            pulsePlayerAccess()
-
-            nextPulseAt = pulseStartedAt + ACCESS_PULSE_INTERVAL
-        else
-            local remaining = nextPulseAt - now
-            sleep(math.min(PLAYER_CHECK_DELAY, remaining))
         end
     end
 end
@@ -844,6 +925,7 @@ local function printProfiles()
         end
 
         print("   planting item: " .. tostring(profile.seedItem))
+        print("   player harvest: " .. tostring(profile.manualHarvest))
         print("   built-in profile: " .. tostring(profile.builtin))
     end
 end
@@ -937,6 +1019,33 @@ local function runCommand()
     return false
 end
 
+local function farmLoop()
+    while true do
+        local block = inspectFront()
+
+        if not block then
+            setManualHarvestPulses(false)
+
+            repeat
+                -- Reassert the left output every game tick while empty.
+                setPlacementAccess(true)
+                status("No crop detected; left placement access is ON")
+                sleep(GAME_TICK)
+                block = inspectFront()
+            until block
+
+            setPlacementAccess(false)
+        end
+
+        local profile = getOrCreateProfile(block)
+
+        setPlacementAccess(false)
+        setManualHarvestPulses(profile.manualHarvest)
+
+        runProfile(profile)
+    end
+end
+
 local function main()
     loadDatabase()
 
@@ -945,42 +1054,36 @@ local function main()
     end
 
     stopDispenser()
-    disablePlayerAccess()
-    redstone.setOutput("top", false)
+    setManualHarvestPulses(false)
+    redstone.setOutput(MANUAL_HARVEST_SIDE, false)
+
+    if inspectFront() then
+        setPlacementAccess(false)
+    else
+        setPlacementAccess(true)
+    end
 
     print("CropFarm " .. PROGRAM_VERSION)
-    print("Left access pulse: 0.10s every 1.50s while mature")
-    print("No left signal is sent while the crop is growing")
-    print("The top output is not used")
-    print("Bone-meal pulse intervals are uniform")
+    print("Right bone-meal signal: 0.50s on, 0.15s off")
+    print("Left is continuously ON whenever the crop position is empty")
+    print("Left turns off when a crop appears")
+    print("Top pulses every 1.50s for player-harvest crops")
+    print("Top pulse width: 0.10s")
     print("No chest is used")
     print("The turtle does not rotate")
     print("Press Ctrl+T to stop")
 
-    while true do
-        local block = inspectFront()
-
-        if not block then
-            disablePlayerAccess()
-            status("Place a crop in front of the turtle")
-
-            repeat
-                sleep(GAME_TICK)
-                block = inspectFront()
-            until block
-
-            disablePlayerAccess()
-        end
-
-        local profile = getOrCreateProfile(block)
-        runProfile(profile)
-    end
+    parallel.waitForAny(
+        farmLoop,
+        manualHarvestPulseLoop
+    )
 end
 
 local function onError(message)
     stopDispenser()
-    disablePlayerAccess()
-    redstone.setOutput("top", false)
+    setPlacementAccess(false)
+    setManualHarvestPulses(false)
+    redstone.setOutput(MANUAL_HARVEST_SIDE, false)
 
     printError(tostring(message))
     printError(debug.traceback())
@@ -990,6 +1093,7 @@ local ok, errorMessage = xpcall(main, onError)
 
 if not ok then
     stopDispenser()
-    disablePlayerAccess()
-    redstone.setOutput("top", false)
+    setPlacementAccess(false)
+    setManualHarvestPulses(false)
+    redstone.setOutput(MANUAL_HARVEST_SIDE, false)
 end
