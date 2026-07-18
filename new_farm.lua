@@ -1,6 +1,6 @@
 local args = { ... }
 
-local PROGRAM_VERSION = "4.5.1-scope-fix"
+local PROGRAM_VERSION = "4.6-uniform-pulses"
 local DATABASE_FILE = "crop_profiles_v4_1.db"
 
 local LOCK_SIDE = "top"
@@ -409,8 +409,6 @@ local function growKnownPlant(profile)
 
         pulseBoneMeal()
 
-        collectAvailableFrontDrops(4)
-
         local after = inspectFront()
 
         if not after then
@@ -737,6 +735,11 @@ end
 local function waitForPlayerHarvest(profile)
     setLocked(true)
 
+    -- Collect leftovers from the previous harvest only after the crop
+    -- has finished growing. This keeps every bone-meal interval equal.
+    collectAvailableFrontDrops(8)
+    compactInventory()
+
     while countEmptySlots() < MIN_EMPTY_SLOTS_BEFORE_HARVEST do
         status(
             "Free at least "
@@ -928,10 +931,10 @@ local function main()
 
     print("CropFarm " .. PROGRAM_VERSION)
     print("Top piston output is inverted")
+    print("Bone-meal pulse intervals are uniform")
+    print("No item pickup occurs between growth pulses")
     print("Replant starts immediately from stored seeds")
-    print("If needed, pickup stops as soon as the exact seed is found")
-    print("The first bone-meal pulse starts immediately after planting")
-    print("Remaining drops are collected during growth")
+    print("Leftover drops are collected after growth completes")
     print("No chest is used")
     print("The turtle does not rotate")
     print("Press Ctrl+T to stop")
