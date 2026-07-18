@@ -1,6 +1,6 @@
 local args = { ... }
 
-local PROGRAM_VERSION = "4.9-mature-left-4s"
+local PROGRAM_VERSION = "4.10-growth-pulses"
 local DATABASE_FILE = "crop_profiles_v4_1.db"
 
 local PLACEMENT_ACCESS_SIDE = "left"
@@ -451,6 +451,7 @@ local collectAvailableFrontDrops
 
 local function growKnownPlant(profile)
     setPlacementAccess(false)
+    setManualHarvestPulses(profile.manualHarvest)
 
     while true do
         local before = inspectFront()
@@ -464,6 +465,8 @@ local function growKnownPlant(profile)
         end
 
         if isMature(before, profile) then
+            setManualHarvestPulses(false)
+
             status(
                 "Growth complete: "
                 .. describeGrowth(before, profile)
@@ -491,6 +494,8 @@ local function growKnownPlant(profile)
         end
 
         if isMature(after, profile) then
+            setManualHarvestPulses(false)
+
             status(
                 "Growth complete: "
                 .. describeGrowth(after, profile)
@@ -766,7 +771,10 @@ local function replant(profile)
             setPlacementAccess(false)
 
             if front.name == profile.blockName then
-                setManualHarvestPulses(profile.manualHarvest)
+                setManualHarvestPulses(
+                    profile.manualHarvest
+                    and not isMature(front, profile)
+                )
                 return true
             end
 
@@ -783,7 +791,7 @@ local function replant(profile)
         if planted then
             setPlacementAccess(false)
             setManualHarvestPulses(profile.manualHarvest)
-            status("Crop planted")
+            status("Crop planted; top growth pulses restarted")
             return true
         end
 
@@ -795,7 +803,7 @@ local function replant(profile)
             if plantedAfterPickup then
                 setPlacementAccess(false)
                 setManualHarvestPulses(profile.manualHarvest)
-                status("Crop planted")
+                status("Crop planted; top growth pulses restarted")
                 return true
             end
         else
@@ -805,7 +813,10 @@ local function replant(profile)
                 setPlacementAccess(false)
 
                 if manuallyPlaced.name == profile.blockName then
-                    setManualHarvestPulses(profile.manualHarvest)
+                    setManualHarvestPulses(
+                        profile.manualHarvest
+                        and not isMature(manuallyPlaced, profile)
+                    )
                     status("Crop detected")
                     return true
                 end
@@ -836,8 +847,9 @@ end
 
 local function waitForPlayerHarvest(profile)
     -- A mature crop must be accessible to the player.
+    -- The 4-second top pulse interval is stopped at maturity.
     setPlacementAccess(true)
-    setManualHarvestPulses(profile.manualHarvest)
+    setManualHarvestPulses(false)
 
     collectAvailableFrontDrops(8)
     compactInventory()
@@ -1042,7 +1054,10 @@ local function farmLoop()
         local profile = getOrCreateProfile(block)
 
         setPlacementAccess(false)
-        setManualHarvestPulses(profile.manualHarvest)
+        setManualHarvestPulses(
+            profile.manualHarvest
+            and not isMature(block, profile)
+        )
 
         runProfile(profile)
     end
@@ -1069,7 +1084,8 @@ local function main()
     print("Right bone-meal signal: 0.50s on, 0.15s off")
     print("Left is continuously ON whenever the crop position is empty")
     print("Left is ON while empty or while the crop is mature")
-    print("Top pulses every 4.00s for player-harvest crops")
+    print("Top pulses every 4.00s only while a crop is growing")
+    print("Top pulses stop at maturity and restart after planting")
     print("Top pulse width: 0.10s")
     print("No chest is used")
     print("The turtle does not rotate")
