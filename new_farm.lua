@@ -1,6 +1,6 @@
 local args = { ... }
 
-local PROGRAM_VERSION = "5.2-berry-cycles"
+local PROGRAM_VERSION = "5.2.1-obstruction-safe"
 local DATABASE_FILE = "crop_profiles_v5_1.db"
 
 local PLACEMENT_ACCESS_SIDE = "left"
@@ -516,16 +516,13 @@ local function learnUnknownPlant(initial)
         local after = inspectFront()
 
         if not after then
-            error("The crop disappeared during learning")
+            stopDispenser()
+            return nil, "missing"
         end
 
         if after.name ~= initial.name then
-            error(
-                "The block changed during learning: "
-                .. initial.name
-                .. " -> "
-                .. after.name
-            )
+            stopDispenser()
+            return nil, "different"
         end
 
         if not sameGrowth(before, after, growthKey) then
@@ -594,6 +591,71 @@ local function learnUnknownPlant(initial)
         .. tostring(MAX_LEARNING_PULSES)
         .. " pulses"
     )
+end
+
+local function hasGrowthState(block)
+    if not block or type(block.state) ~= "table" then
+        return false
+    end
+
+    return block.state.age ~= nil
+        or block.state.stage ~= nil
+        or block.state.growth ~= nil
+        or block.state.maturity ~= nil
+        or block.state.level ~= nil
+end
+
+local function isCropCandidate(block)
+    if not block then
+        return false
+    end
+
+    if findProfileByName(block.name) then
+        return true
+    end
+
+    if BUILTIN_CROPS[block.name] then
+        return true
+    end
+
+    if isCobblemonBerryBlock(block) then
+        return true
+    end
+
+    return hasGrowthState(block)
+end
+
+local function waitForValidFrontBlock()
+    stopDispenser()
+    setManualHarvestPulses(false)
+    setPlacementAccess(true)
+
+    while true do
+        requirePower()
+
+        local block = inspectFront()
+
+        if not block then
+            status(
+                "Front obstruction cleared; "
+                .. "waiting for a crop"
+            )
+            return nil
+        end
+
+        if isCropCandidate(block) then
+            setPlacementAccess(false)
+            return block
+        end
+
+        status(
+            "Unsupported block in front: "
+            .. block.name
+            .. "; remove it or replace it with a crop"
+        )
+
+        sleep(GAME_TICK)
+    end
 end
 
 local function getOrCreateProfile(block)
@@ -1371,23 +1433,58 @@ local function runPoweredSession()
             until block
 
             requirePower()
-            setPlacementAccess(false)
         end
 
-        workingCropName = block.name
+        if not isCropCandidate(block) then
+            block = waitForValidFrontBlock()
 
-        local profile = getOrCreateProfile(block)
+            if not block then
+                sleep(GAME_TICK)
+            end
+        end
 
-        requirePower()
-        workingCropName = profile.blockName
+        if block then
+            setPlacementAccess(false)
+            workingCropName = block.name
 
-        setPlacementAccess(false)
-        setManualHarvestPulses(
-            profile.manualHarvest
-            and not isMature(block, profile)
-        )
+            local profile, profileReason = getOrCreateProfile(block)
 
-        runProfile(profile)
+            if not profile then
+                stopDispenser()
+                setManualHarvestPulses(false)
+                setPlacementAccess(true)
+
+                if profileReason == "missing" then
+                    status(
+                        "Crop disappeared during learning; "
+                        .. "waiting for a new crop"
+                    )
+                elseif profileReason == "different" then
+                    status(
+                        "Front block changed during learning; "
+                        .. "rechecking it safely"
+                    )
+                else
+                    status(
+                        "Could not create a crop profile; "
+                        .. "waiting for the front block to change"
+                    )
+                end
+
+                sleep(GAME_TICK)
+            else
+                requirePower()
+                workingCropName = profile.blockName
+
+                setPlacementAccess(false)
+                setManualHarvestPulses(
+                    profile.manualHarvest
+                    and not isMature(block, profile)
+                )
+
+                runProfile(profile)
+            end
+        end
     end
 end
 
@@ -1457,6 +1554,8 @@ local function main()
     print("While OFF, the turtle continuously tries to suck front items")
     print("A crop placed while OFF is left untouched")
     print("Back ON: resume work with the crop currently in front")
+    print("Ordinary front blocks pause the farm instead of causing an error")
+    print("Left access stays ON while an obstruction is waiting for removal")
     print("Cobblemon berries use age 0->5, then regrow from age 3->5")
     print("Berry bone-meal failures are retried until age reaches 5")
     print("Actual initial/regrowth pulse minimums are stored per berry")
