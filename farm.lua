@@ -1,6 +1,6 @@
 local args = { ... }
 
-local PROGRAM_VERSION = "5.1-berry-learning"
+local PROGRAM_VERSION = "5.2-berry-cycles"
 local DATABASE_FILE = "crop_profiles_v5_1.db"
 
 local PLACEMENT_ACCESS_SIDE = "left"
@@ -22,6 +22,9 @@ local GROWTH_SIGNAL_OFF_TIME = 4.00
 
 local MAX_LEARNING_PULSES = 2048
 local UNKNOWN_MAX_NO_CHANGE_ATTEMPTS = 8
+
+local COBBLEMON_BERRY_MAX_AGE = 5
+local COBBLEMON_BERRY_REGROW_AGE = 3
 
 local MIN_EMPTY_SLOTS_BEFORE_HARVEST = 3
 local SHUTDOWN_PICKUP_QUIET_PASSES = 8
@@ -61,7 +64,7 @@ local BUILTIN_CROPS = {
 }
 
 local database = {
-    version = 5,
+    version = 6,
     profiles = {}
 }
 
@@ -347,6 +350,111 @@ local function addBuiltinProfile(block)
     return profile
 end
 
+local function isCobblemonBerryBlock(block)
+    if not block
+        or type(block.name) ~= "string"
+        or type(block.state) ~= "table"
+        or type(block.state.age) ~= "number" then
+        return false
+    end
+
+    return string.match(
+        block.name,
+        "^cobblemon:.*_berry$"
+    ) ~= nil
+end
+
+local function getOrCreateBerryProfile(block)
+    local profile = findProfileByName(block.name)
+    local changed = false
+
+    if not profile then
+        profile = {
+            blockName = block.name,
+            growthKey = "age",
+            maximum = COBBLEMON_BERRY_MAX_AGE,
+            matureState = nil,
+            seedItem = block.name,
+            manualHarvest = true,
+            builtin = true,
+            berry = true,
+            regrowAge = COBBLEMON_BERRY_REGROW_AGE,
+            minInitialPulses = nil,
+            minRegrowPulses = nil,
+            lastInitialPulses = nil,
+            lastRegrowPulses = nil
+        }
+
+        database.profiles[#database.profiles + 1] = profile
+        changed = true
+    else
+        local expected = {
+            growthKey = "age",
+            maximum = COBBLEMON_BERRY_MAX_AGE,
+            matureState = false,
+            manualHarvest = true,
+            builtin = true,
+            berry = true,
+            regrowAge = COBBLEMON_BERRY_REGROW_AGE
+        }
+
+        for key, value in pairs(expected) do
+            local expectedValue = value
+
+            if key == "matureState" then
+                expectedValue = nil
+            end
+
+            if profile[key] ~= expectedValue then
+                profile[key] = expectedValue
+                changed = true
+            end
+        end
+
+        if not profile.seedItem then
+            profile.seedItem = block.name
+            changed = true
+        end
+    end
+
+    if changed then
+        saveDatabase()
+    end
+
+    status(
+        "Cobblemon berry detected: "
+        .. block.name
+        .. ", age "
+        .. tostring(block.state.age)
+        .. "/"
+        .. tostring(COBBLEMON_BERRY_MAX_AGE)
+    )
+
+    return profile
+end
+
+local function recordBerryPulseStats(profile, startAge, pulses)
+    if not profile.berry
+        or type(startAge) ~= "number"
+        or pulses <= 0 then
+        return
+    end
+
+    local isInitial = startAge < COBBLEMON_BERRY_REGROW_AGE
+    local lastKey =
+        isInitial and "lastInitialPulses" or "lastRegrowPulses"
+    local minKey =
+        isInitial and "minInitialPulses" or "minRegrowPulses"
+
+    profile[lastKey] = pulses
+
+    if profile[minKey] == nil or pulses < profile[minKey] then
+        profile[minKey] = pulses
+    end
+
+    saveDatabase()
+end
+
 local function sameGrowth(before, after, growthKey)
     if not before or not after then
         return false
@@ -489,6 +597,10 @@ local function learnUnknownPlant(initial)
 end
 
 local function getOrCreateProfile(block)
+    if isCobblemonBerryBlock(block) then
+        return getOrCreateBerryProfile(block)
+    end
+
     local profile = findProfileByName(block.name)
 
     if profile then
@@ -539,6 +651,9 @@ local function growKnownPlant(profile)
     setPlacementAccess(false)
     setManualHarvestPulses(profile.manualHarvest)
 
+    local startingAge = nil
+    local boneMealPulses = 0
+
     while true do
         requirePower()
 
@@ -552,8 +667,17 @@ local function growKnownPlant(profile)
             return "different"
         end
 
+        if startingAge == nil and profile.growthKey then
+            startingAge = before.state[profile.growthKey]
+        end
+
         if isMature(before, profile) then
             setManualHarvestPulses(false)
+            recordBerryPulseStats(
+                profile,
+                startingAge,
+                boneMealPulses
+            )
 
             status(
                 "Growth complete: "
@@ -570,6 +694,7 @@ local function growKnownPlant(profile)
         )
 
         pulseBoneMeal()
+        boneMealPulses = boneMealPulses + 1
 
         local after = inspectFront()
 
@@ -583,6 +708,11 @@ local function growKnownPlant(profile)
 
         if isMature(after, profile) then
             setManualHarvestPulses(false)
+            recordBerryPulseStats(
+                profile,
+                startingAge,
+                boneMealPulses
+            )
 
             status(
                 "Growth complete: "
@@ -1042,6 +1172,13 @@ local function waitForPlayerHarvest(profile)
 
             setPlacementAccess(false)
             setManualHarvestPulses(false)
+
+            if profile.berry and current
+                and current.name == profile.blockName then
+                collectAvailableFrontDrops(4)
+                compactInventory()
+            end
+
             return
         end
     end
@@ -1105,6 +1242,25 @@ local function printProfiles()
         print("   planting item: " .. tostring(profile.seedItem))
         print("   player harvest: " .. tostring(profile.manualHarvest))
         print("   built-in profile: " .. tostring(profile.builtin))
+
+        if profile.berry then
+            print(
+                "   berry cycle: initial age 0->5, "
+                .. "regrowth age 3->5"
+            )
+            print(
+                "   initial pulses: last="
+                .. tostring(profile.lastInitialPulses)
+                .. ", minimum="
+                .. tostring(profile.minInitialPulses)
+            )
+            print(
+                "   regrowth pulses: last="
+                .. tostring(profile.lastRegrowPulses)
+                .. ", minimum="
+                .. tostring(profile.minRegrowPulses)
+            )
+        end
     end
 end
 
@@ -1140,7 +1296,7 @@ local function commandReset()
     end
 
     database = {
-        version = 5,
+        version = 6,
         profiles = {}
     }
 
@@ -1301,7 +1457,10 @@ local function main()
     print("While OFF, the turtle continuously tries to suck front items")
     print("A crop placed while OFF is left untouched")
     print("Back ON: resume work with the crop currently in front")
-    print("Unknown crops need 8 unchanged growth attempts to learn maximum")
+    print("Cobblemon berries use age 0->5, then regrow from age 3->5")
+    print("Berry bone-meal failures are retried until age reaches 5")
+    print("Actual initial/regrowth pulse minimums are stored per berry")
+    print("Other unknown crops need 8 unchanged attempts to learn maximum")
     print("Right bone-meal signal: 0.50s on, 0.15s off")
     print("Left is continuously ON whenever the crop position is empty")
     print("Left is ON while empty or while the crop is mature")
