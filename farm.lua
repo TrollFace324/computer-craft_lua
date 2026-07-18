@@ -1,19 +1,20 @@
 local args = { ... }
 
-local PROGRAM_VERSION = "4.3-inverted-fast"
+local PROGRAM_VERSION = "4.4-reliable-fast"
 local DATABASE_FILE = "crop_profiles_v4_1.db"
 
 local LOCK_SIDE = "top"
 local DISPENSER_SIDE = "right"
 
-local TICK = 0.05
+local GAME_TICK = 0.05
+local REDSTONE_TICK = 0.10
 
-local PULSE_TIME = TICK
-local AFTER_PULSE_DELAY = TICK
-local PLAYER_CHECK_DELAY = TICK
+local PULSE_TIME = REDSTONE_TICK
+local AFTER_PULSE_DELAY = REDSTONE_TICK
+local PLAYER_CHECK_DELAY = GAME_TICK
 local DROP_SETTLE_DELAY = 0
-local RETRY_DELAY = TICK
-local PICKUP_RETRY_DELAY = TICK
+local RETRY_DELAY = GAME_TICK
+local PICKUP_RETRY_DELAY = GAME_TICK
 
 local MAX_LEARNING_PULSES = 256
 local MAX_PICKUP_PASSES = 32
@@ -175,12 +176,12 @@ end
 
 local function pulseBoneMeal()
     stopDispenser()
+    sleep(AFTER_PULSE_DELAY)
 
     redstone.setOutput(DISPENSER_SIDE, true)
     sleep(PULSE_TIME)
 
     stopDispenser()
-    sleep(AFTER_PULSE_DELAY)
 end
 
 local function findProfileByName(blockName)
@@ -634,7 +635,7 @@ end
 local function placeFromSlot(profile, slot, itemName)
     turtle.select(slot)
     turtle.place()
-    sleep(TICK)
+    sleep(GAME_TICK)
 
     local planted = inspectFront()
 
@@ -931,7 +932,8 @@ local function main()
 
     print("CropFarm " .. PROGRAM_VERSION)
     print("Top piston output is inverted")
-    print("Fast mode: one-tick redstone and block checks")
+    print("Reliable fast pulse: 0.10s low, 0.10s high")
+    print("Block checks run every game tick")
     print("Drops reuse matching stacks and are compacted")
     print("The exact saved planting item is used for the active crop")
     print("No chest is used")
@@ -946,7 +948,7 @@ local function main()
             status("Place a crop in front of the turtle")
 
             repeat
-                sleep(TICK)
+                sleep(GAME_TICK)
                 block = inspectFront()
             until block
 
