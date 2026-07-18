@@ -1,9 +1,9 @@
 local args = { ... }
 
-local PROGRAM_VERSION = "4.6-uniform-pulses"
+local PROGRAM_VERSION = "4.7-left-access-pulse"
 local DATABASE_FILE = "crop_profiles_v4_1.db"
 
-local LOCK_SIDE = "top"
+local ACCESS_SIDE = "left"
 local DISPENSER_SIDE = "right"
 
 local GAME_TICK = 0.05
@@ -13,6 +13,9 @@ local PULSE_TIME = REDSTONE_TICK
 local AFTER_PULSE_DELAY = REDSTONE_TICK
 local PLAYER_CHECK_DELAY = GAME_TICK
 local RETRY_DELAY = GAME_TICK
+
+local ACCESS_PULSE_INTERVAL = 1.50
+local ACCESS_PULSE_TIME = 0.10
 
 local MAX_LEARNING_PULSES = 256
 local MIN_EMPTY_SLOTS_BEFORE_HARVEST = 3
@@ -59,8 +62,14 @@ local function status(message)
     end
 end
 
-local function setLocked(locked)
-    redstone.setOutput(LOCK_SIDE, not locked)
+local function disablePlayerAccess()
+    redstone.setOutput(ACCESS_SIDE, false)
+end
+
+local function pulsePlayerAccess()
+    redstone.setOutput(ACCESS_SIDE, true)
+    sleep(ACCESS_PULSE_TIME)
+    redstone.setOutput(ACCESS_SIDE, false)
 end
 
 local function stopDispenser()
@@ -257,7 +266,7 @@ local function detectGrowthKey(block)
 end
 
 local function learnUnknownPlant(initial)
-    setLocked(true)
+    disablePlayerAccess()
 
     local growthKey = detectGrowthKey(initial)
     local current = initial
@@ -379,7 +388,7 @@ end
 local collectAvailableFrontDrops
 
 local function growKnownPlant(profile)
-    setLocked(true)
+    disablePlayerAccess()
 
     while true do
         local before = inspectFront()
@@ -686,7 +695,7 @@ local function tryPlant(profile)
 end
 
 local function replant(profile)
-    setLocked(true)
+    disablePlayerAccess()
 
     while true do
         local front = inspectFront()
@@ -733,10 +742,8 @@ local function replant(profile)
 end
 
 local function waitForPlayerHarvest(profile)
-    setLocked(true)
+    disablePlayerAccess()
 
-    -- Collect leftovers from the previous harvest only after the crop
-    -- has finished growing. This keeps every bone-meal interval equal.
     collectAvailableFrontDrops(8)
     compactInventory()
 
@@ -749,25 +756,36 @@ local function waitForPlayerHarvest(profile)
         sleep(RETRY_DELAY)
     end
 
-    setLocked(false)
-
     status(
         "Mature: "
         .. profile.blockName
-        .. ". Piston unlocked; break the crop"
+        .. ". Sending left access pulses every 1.5 seconds"
     )
 
-    while true do
-        sleep(PLAYER_CHECK_DELAY)
+    local nextPulseAt = 0
 
+    while true do
         local current = inspectFront()
 
         if not current
             or current.name ~= profile.blockName
             or not isMature(current, profile) then
 
-            setLocked(true)
+            disablePlayerAccess()
             return
+        end
+
+        local now = os.clock()
+
+        if now >= nextPulseAt then
+            local pulseStartedAt = now
+
+            pulsePlayerAccess()
+
+            nextPulseAt = pulseStartedAt + ACCESS_PULSE_INTERVAL
+        else
+            local remaining = nextPulseAt - now
+            sleep(math.min(PLAYER_CHECK_DELAY, remaining))
         end
     end
 end
@@ -927,14 +945,14 @@ local function main()
     end
 
     stopDispenser()
-    setLocked(true)
+    disablePlayerAccess()
+    redstone.setOutput("top", false)
 
     print("CropFarm " .. PROGRAM_VERSION)
-    print("Top piston output is inverted")
+    print("Left access pulse: 0.10s every 1.50s while mature")
+    print("No left signal is sent while the crop is growing")
+    print("The top output is not used")
     print("Bone-meal pulse intervals are uniform")
-    print("No item pickup occurs between growth pulses")
-    print("Replant starts immediately from stored seeds")
-    print("Leftover drops are collected after growth completes")
     print("No chest is used")
     print("The turtle does not rotate")
     print("Press Ctrl+T to stop")
@@ -943,7 +961,7 @@ local function main()
         local block = inspectFront()
 
         if not block then
-            setLocked(false)
+            disablePlayerAccess()
             status("Place a crop in front of the turtle")
 
             repeat
@@ -951,7 +969,7 @@ local function main()
                 block = inspectFront()
             until block
 
-            setLocked(true)
+            disablePlayerAccess()
         end
 
         local profile = getOrCreateProfile(block)
@@ -961,7 +979,8 @@ end
 
 local function onError(message)
     stopDispenser()
-    setLocked(true)
+    disablePlayerAccess()
+    redstone.setOutput("top", false)
 
     printError(tostring(message))
     printError(debug.traceback())
@@ -971,5 +990,6 @@ local ok, errorMessage = xpcall(main, onError)
 
 if not ok then
     stopDispenser()
-    setLocked(true)
+    disablePlayerAccess()
+    redstone.setOutput("top", false)
 end
