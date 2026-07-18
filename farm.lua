@@ -1,11 +1,12 @@
 local args = { ... }
 
-local PROGRAM_VERSION = "4.12-close-before-plant"
+local PROGRAM_VERSION = "5.0.1-off-left-on"
 local DATABASE_FILE = "crop_profiles_v4_1.db"
 
 local PLACEMENT_ACCESS_SIDE = "left"
 local MANUAL_HARVEST_SIDE = "top"
 local DISPENSER_SIDE = "right"
+local POWER_INPUT_SIDE = "back"
 
 local GAME_TICK = 0.05
 
@@ -21,6 +22,8 @@ local GROWTH_SIGNAL_OFF_TIME = 4.00
 
 local MAX_LEARNING_PULSES = 256
 local MIN_EMPTY_SLOTS_BEFORE_HARVEST = 3
+local SHUTDOWN_PICKUP_QUIET_PASSES = 8
+local SHUTDOWN_PICKUP_MAX_PASSES = 96
 
 local BUILTIN_CROPS = {
     ["minecraft:wheat"] = {
@@ -69,6 +72,10 @@ local function status(message)
     end
 end
 
+local POWER_OFF_ERROR = {}
+local powerEnabled = redstone.getInput(POWER_INPUT_SIDE)
+local workingCropName = nil
+
 local manualHarvestPulsesEnabled = false
 
 local function setPlacementAccess(open)
@@ -76,7 +83,7 @@ local function setPlacementAccess(open)
 end
 
 local function setManualHarvestPulses(enabled)
-    enabled = enabled == true
+    enabled = enabled == true and powerEnabled
 
     if manualHarvestPulsesEnabled == enabled then
         return
@@ -136,6 +143,51 @@ end
 
 local function stopDispenser()
     redstone.setOutput(DISPENSER_SIDE, false)
+end
+
+local function requirePower()
+    if not powerEnabled then
+        error(POWER_OFF_ERROR, 0)
+    end
+end
+
+local function waitWhilePowered(seconds)
+    local deadline = os.clock() + seconds
+
+    while true do
+        requirePower()
+
+        local remaining = deadline - os.clock()
+
+        if remaining <= 0 then
+            return
+        end
+
+        sleep(math.min(GAME_TICK, remaining))
+    end
+end
+
+local function powerMonitorLoop()
+    local previous = powerEnabled
+
+    while true do
+        os.pullEvent("redstone")
+
+        local current = redstone.getInput(POWER_INPUT_SIDE)
+
+        if current ~= previous then
+            powerEnabled = current
+            previous = current
+
+            if not current then
+                stopDispenser()
+                setManualHarvestPulses(false)
+                redstone.setOutput(MANUAL_HARVEST_SIDE, false)
+            end
+
+            os.queueEvent("cropfarm_power_changed")
+        end
+    end
 end
 
 local function copyTable(source)
@@ -242,11 +294,13 @@ local function saveDatabase()
 end
 
 local function pulseBoneMeal()
+    requirePower()
+
     redstone.setOutput(DISPENSER_SIDE, true)
-    sleep(BONE_MEAL_SIGNAL_TIME)
+    waitWhilePowered(BONE_MEAL_SIGNAL_TIME)
 
     stopDispenser()
-    sleep(BONE_MEAL_RESET_TIME)
+    waitWhilePowered(BONE_MEAL_RESET_TIME)
 end
 
 local function findProfileByName(blockName)
@@ -342,6 +396,8 @@ local function learnUnknownPlant(initial)
     )
 
     for pulseNumber = 1, MAX_LEARNING_PULSES do
+        requirePower()
+
         local before = current
 
         pulseBoneMeal()
@@ -461,6 +517,8 @@ local function growKnownPlant(profile)
     setManualHarvestPulses(profile.manualHarvest)
 
     while true do
+        requirePower()
+
         local before = inspectFront()
 
         if not before then
@@ -603,6 +661,58 @@ collectAvailableFrontDrops = function(maxAttempts)
     turtle.select(1)
 end
 
+local function collectAllFrontDrops()
+    local quietPasses = 0
+    local totalPasses = 0
+
+    while quietPasses < SHUTDOWN_PICKUP_QUIET_PASSES
+        and totalPasses < SHUTDOWN_PICKUP_MAX_PASSES do
+
+        totalPasses = totalPasses + 1
+        turtle.select(1)
+
+        if turtle.suck() then
+            quietPasses = 0
+        else
+            quietPasses = quietPasses + 1
+            sleep(GAME_TICK)
+        end
+    end
+
+    compactInventory()
+    turtle.select(1)
+end
+
+local function enterPoweredOffState()
+    stopDispenser()
+    setManualHarvestPulses(false)
+    redstone.setOutput(MANUAL_HARVEST_SIDE, false)
+
+    -- Close the hatch during the one-time cleanup.
+    setPlacementAccess(false)
+
+    local front = inspectFront()
+
+    if workingCropName
+        and front
+        and front.name == workingCropName then
+
+        turtle.select(1)
+        turtle.dig()
+        sleep(PLACEMENT_HATCH_CLOSE_DELAY)
+    end
+
+    collectAllFrontDrops()
+    compactInventory()
+
+    workingCropName = nil
+
+    -- Powered-off initial state: allow manual planting, but perform no
+    -- automatic inspection, growth, breaking, pickup or replanting.
+    setPlacementAccess(true)
+    status("Power OFF: cleanup complete; waiting for back redstone")
+end
+
 local function itemPath(itemName)
     local colon = string.find(itemName, ":", 1, true)
 
@@ -697,10 +807,13 @@ local function sortedPlantingCandidates(profile)
 end
 
 local function placeFromSlot(profile, slot, itemName)
+    requirePower()
+
     -- Close the player's placement hatch before planting.
     setPlacementAccess(false)
-    sleep(PLACEMENT_HATCH_CLOSE_DELAY)
+    waitWhilePowered(PLACEMENT_HATCH_CLOSE_DELAY)
 
+    requirePower()
     turtle.select(slot)
 
     local placed, reason = turtle.place()
@@ -776,6 +889,8 @@ local function replant(profile)
     setManualHarvestPulses(false)
 
     while true do
+        requirePower()
+
         local front = inspectFront()
 
         if front then
@@ -881,7 +996,7 @@ local function waitForPlayerHarvest(profile)
     )
 
     while true do
-        sleep(PLAYER_CHECK_DELAY)
+        waitWhilePowered(PLAYER_CHECK_DELAY)
 
         local current = inspectFront()
 
@@ -898,6 +1013,8 @@ end
 
 local function runProfile(profile)
     while true do
+        requirePower()
+
         local block = inspectFront()
 
         if not block then
@@ -1044,25 +1161,33 @@ local function runCommand()
     return false
 end
 
-local function farmLoop()
+local function runPoweredSession()
     while true do
+        requirePower()
+
         local block = inspectFront()
 
         if not block then
             setManualHarvestPulses(false)
 
             repeat
-                -- Reassert the left output every game tick while empty.
+                requirePower()
                 setPlacementAccess(true)
-                status("No crop detected; left placement access is ON")
+                status("Power ON: no crop detected; left placement access is ON")
                 sleep(GAME_TICK)
                 block = inspectFront()
             until block
 
+            requirePower()
             setPlacementAccess(false)
         end
 
+        workingCropName = block.name
+
         local profile = getOrCreateProfile(block)
+
+        requirePower()
+        workingCropName = profile.blockName
 
         setPlacementAccess(false)
         setManualHarvestPulses(
@@ -1074,6 +1199,44 @@ local function farmLoop()
     end
 end
 
+local function farmLoop()
+    local sessionWasPowered = false
+
+    while true do
+        if not powerEnabled then
+            if sessionWasPowered then
+                enterPoweredOffState()
+                sessionWasPowered = false
+            else
+                stopDispenser()
+                setManualHarvestPulses(false)
+                redstone.setOutput(MANUAL_HARVEST_SIDE, false)
+                setPlacementAccess(true)
+                status("Power OFF: waiting for back redstone")
+            end
+
+            while not powerEnabled do
+                -- Powered-off state must continuously keep the left
+                -- placement-access output enabled.
+                setPlacementAccess(true)
+                stopDispenser()
+                setManualHarvestPulses(false)
+                redstone.setOutput(MANUAL_HARVEST_SIDE, false)
+
+                sleep(GAME_TICK)
+            end
+        else
+            sessionWasPowered = true
+
+            local ok, result = pcall(runPoweredSession)
+
+            if not ok and result ~= POWER_OFF_ERROR then
+                error(result, 0)
+            end
+        end
+    end
+end
+
 local function main()
     loadDatabase()
 
@@ -1081,17 +1244,24 @@ local function main()
         return
     end
 
+    powerEnabled = redstone.getInput(POWER_INPUT_SIDE)
+
     stopDispenser()
     setManualHarvestPulses(false)
     redstone.setOutput(MANUAL_HARVEST_SIDE, false)
 
-    if inspectFront() then
+    if powerEnabled and inspectFront() then
         setPlacementAccess(false)
     else
         setPlacementAccess(true)
     end
 
     print("CropFarm " .. PROGRAM_VERSION)
+    print("Back redstone controls working power")
+    print("Back OFF during work: break crop, collect drops, enter idle")
+    print("While OFF, the left output stays continuously ON")
+    print("A crop placed while OFF is left untouched")
+    print("Back ON: resume work with the crop currently in front")
     print("Right bone-meal signal: 0.50s on, 0.15s off")
     print("Left is continuously ON whenever the crop position is empty")
     print("Left is ON while empty or while the crop is mature")
@@ -1106,13 +1276,14 @@ local function main()
 
     parallel.waitForAny(
         farmLoop,
-        manualHarvestPulseLoop
+        manualHarvestPulseLoop,
+        powerMonitorLoop
     )
 end
 
 local function onError(message)
     stopDispenser()
-    setPlacementAccess(false)
+    setPlacementAccess(true)
     setManualHarvestPulses(false)
     redstone.setOutput(MANUAL_HARVEST_SIDE, false)
 
@@ -1124,7 +1295,7 @@ local ok, errorMessage = xpcall(main, onError)
 
 if not ok then
     stopDispenser()
-    setPlacementAccess(false)
+    setPlacementAccess(true)
     setManualHarvestPulses(false)
     redstone.setOutput(MANUAL_HARVEST_SIDE, false)
 end
