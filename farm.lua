@@ -1,6 +1,6 @@
 local args = { ... }
 
-local PROGRAM_VERSION = "4.1-exact-seed"
+local PROGRAM_VERSION = "4.2-compact-pickup"
 local DATABASE_FILE = "crop_profiles_v4_1.db"
 
 local LOCK_SIDE = "top"
@@ -469,16 +469,40 @@ local function findExactItemSlot(itemName)
     return nil
 end
 
-local function findPartialStackSlot()
-    for slot = 1, 16 do
-        local detail = turtle.getItemDetail(slot)
+local function sameItem(first, second)
+    if not first or not second then
+        return false
+    end
 
-        if detail and turtle.getItemCount(slot) < turtle.getItemLimit(slot) then
-            return slot
+    return first.name == second.name
+        and first.nbt == second.nbt
+end
+
+local function compactInventory()
+    for sourceSlot = 16, 2, -1 do
+        local source = turtle.getItemDetail(sourceSlot)
+
+        if source then
+            for targetSlot = 1, sourceSlot - 1 do
+                local target = turtle.getItemDetail(targetSlot)
+
+                if sameItem(source, target)
+                    and turtle.getItemSpace(targetSlot) > 0 then
+
+                    turtle.select(sourceSlot)
+                    turtle.transferTo(targetSlot)
+
+                    source = turtle.getItemDetail(sourceSlot)
+
+                    if not source then
+                        break
+                    end
+                end
+            end
         end
     end
 
-    return nil
+    turtle.select(1)
 end
 
 local function collectFrontDrops(profile)
@@ -486,26 +510,16 @@ local function collectFrontDrops(profile)
     local totalPasses = 0
     local pickedAnything = false
 
-    local activeSlot = findEmptySlot()
-
-    if not activeSlot then
-        activeSlot = findExactItemSlot(profile and profile.seedItem)
-            or findPartialStackSlot()
-    end
-
     while quietPasses < PICKUP_QUIET_PASSES
         and totalPasses < MAX_PICKUP_PASSES do
 
         totalPasses = totalPasses + 1
 
-        if not activeSlot then
-            status("Turtle inventory is full; remove harvested items")
-            break
-        end
+        -- turtle.suck searches for the first acceptable inventory slot,
+        -- beginning at the selected slot. Starting at slot 1 allows it
+        -- to reuse existing matching stacks before using empty slots.
+        turtle.select(1)
 
-        turtle.select(activeSlot)
-
-        local wasEmpty = turtle.getItemCount(activeSlot) == 0
         local picked = turtle.suck()
 
         if picked then
@@ -513,31 +527,14 @@ local function collectFrontDrops(profile)
             quietPasses = 0
             sleep(0.02)
         else
-            local isStillEmpty = turtle.getItemCount(activeSlot) == 0
-
-            if wasEmpty and isStillEmpty then
-                quietPasses = quietPasses + 1
-                sleep(PICKUP_RETRY_DELAY)
-            else
-                local nextSlot = findEmptySlot()
-
-                if nextSlot and nextSlot ~= activeSlot then
-                    activeSlot = nextSlot
-                else
-                    quietPasses = quietPasses + 1
-                    sleep(PICKUP_RETRY_DELAY)
-                end
-            end
-        end
-
-        if turtle.getItemCount(activeSlot) >= turtle.getItemLimit(activeSlot) then
-            activeSlot = findEmptySlot()
-                or findExactItemSlot(profile and profile.seedItem)
-                or findPartialStackSlot()
+            quietPasses = quietPasses + 1
+            sleep(PICKUP_RETRY_DELAY)
         end
     end
 
+    compactInventory()
     turtle.select(1)
+
     return pickedAnything
 end
 
@@ -934,7 +931,7 @@ local function main()
 
     print("CropFarm " .. PROGRAM_VERSION)
     print("Right side is redstone output only")
-    print("Drops are collected one inventory slot at a time")
+    print("Drops reuse matching stacks and are compacted")
     print("The exact saved planting item is used for the active crop")
     print("No chest is used")
     print("The turtle does not rotate")
