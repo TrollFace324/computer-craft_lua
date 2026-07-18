@@ -1,6 +1,6 @@
 local args = { ... }
 
-local PROGRAM_VERSION = "4.4-reliable-fast"
+local PROGRAM_VERSION = "4.5-instant-replant"
 local DATABASE_FILE = "crop_profiles_v4_1.db"
 
 local LOCK_SIDE = "top"
@@ -12,13 +12,9 @@ local REDSTONE_TICK = 0.10
 local PULSE_TIME = REDSTONE_TICK
 local AFTER_PULSE_DELAY = REDSTONE_TICK
 local PLAYER_CHECK_DELAY = GAME_TICK
-local DROP_SETTLE_DELAY = 0
 local RETRY_DELAY = GAME_TICK
-local PICKUP_RETRY_DELAY = GAME_TICK
 
 local MAX_LEARNING_PULSES = 256
-local MAX_PICKUP_PASSES = 32
-local PICKUP_QUIET_PASSES = 3
 local MIN_EMPTY_SLOTS_BEFORE_HARVEST = 3
 
 local BUILTIN_CROPS = {
@@ -175,13 +171,11 @@ local function saveDatabase()
 end
 
 local function pulseBoneMeal()
-    stopDispenser()
-    sleep(AFTER_PULSE_DELAY)
-
     redstone.setOutput(DISPENSER_SIDE, true)
     sleep(PULSE_TIME)
 
     stopDispenser()
+    sleep(AFTER_PULSE_DELAY)
 end
 
 local function findProfileByName(blockName)
@@ -413,6 +407,8 @@ local function growKnownPlant(profile)
 
         pulseBoneMeal()
 
+        collectAvailableFrontDrops(4)
+
         local after = inspectFront()
 
         if not after then
@@ -507,36 +503,21 @@ local function compactInventory()
     turtle.select(1)
 end
 
-local function collectFrontDrops(profile)
-    local quietPasses = 0
-    local totalPasses = 0
-    local pickedAnything = false
+local function suckFrontOnce()
+    turtle.select(1)
+    return turtle.suck()
+end
 
-    while quietPasses < PICKUP_QUIET_PASSES
-        and totalPasses < MAX_PICKUP_PASSES do
+local function collectAvailableFrontDrops(maxAttempts)
+    maxAttempts = maxAttempts or 4
 
-        totalPasses = totalPasses + 1
-
-        -- turtle.suck searches for the first acceptable inventory slot,
-        -- beginning at the selected slot. Starting at slot 1 allows it
-        -- to reuse existing matching stacks before using empty slots.
-        turtle.select(1)
-
-        local picked = turtle.suck()
-
-        if picked then
-            pickedAnything = true
-            quietPasses = 0
-        else
-            quietPasses = quietPasses + 1
-            sleep(PICKUP_RETRY_DELAY)
+    for _ = 1, maxAttempts do
+        if not suckFrontOnce() then
+            break
         end
     end
 
-    compactInventory()
     turtle.select(1)
-
-    return pickedAnything
 end
 
 local function itemPath(itemName)
@@ -634,14 +615,19 @@ end
 
 local function placeFromSlot(profile, slot, itemName)
     turtle.select(slot)
-    turtle.place()
-    sleep(GAME_TICK)
+
+    local placed, reason = turtle.place()
+
+    if not placed then
+        turtle.select(1)
+        return false, reason or ("Could not plant " .. itemName)
+    end
 
     local planted = inspectFront()
 
     if not planted then
         turtle.select(1)
-        return false, "Could not plant " .. itemName
+        return false, "Placement succeeded but no crop was detected"
     end
 
     if planted.name ~= profile.blockName then
@@ -714,8 +700,6 @@ local function replant(profile)
             return false
         end
 
-        collectFrontDrops(profile)
-
         local planted, reason = tryPlant(profile)
 
         if planted then
@@ -723,16 +707,28 @@ local function replant(profile)
             return true
         end
 
-        if countEmptySlots() == 0 then
-            status(
-                "Turtle inventory is full and no planting item is available; "
-                .. "remove some harvested items"
-            )
-        else
-            status(reason .. "; waiting for a front drop or a manually added item")
-        end
+        local picked = suckFrontOnce()
 
-        sleep(RETRY_DELAY)
+        if picked then
+            -- Re-check the exact planting item immediately, with no delay.
+            local plantedAfterPickup = tryPlant(profile)
+
+            if plantedAfterPickup then
+                status("Crop planted")
+                return true
+            end
+        else
+            if countEmptySlots() == 0 then
+                status(
+                    "Turtle inventory is full and the planting item is missing; "
+                    .. "remove some harvested items"
+                )
+            else
+                status(reason .. "; waiting for the exact planting item")
+            end
+
+            sleep(GAME_TICK)
+        end
     end
 end
 
@@ -766,8 +762,6 @@ local function waitForPlayerHarvest(profile)
             or not isMature(current, profile) then
 
             setLocked(true)
-            sleep(DROP_SETTLE_DELAY)
-            collectFrontDrops(profile)
             return
         end
     end
@@ -932,10 +926,10 @@ local function main()
 
     print("CropFarm " .. PROGRAM_VERSION)
     print("Top piston output is inverted")
-    print("Reliable fast pulse: 0.10s low, 0.10s high")
-    print("Block checks run every game tick")
-    print("Drops reuse matching stacks and are compacted")
-    print("The exact saved planting item is used for the active crop")
+    print("Replant starts immediately from stored seeds")
+    print("If needed, pickup stops as soon as the exact seed is found")
+    print("The first bone-meal pulse starts immediately after planting")
+    print("Remaining drops are collected during growth")
     print("No chest is used")
     print("The turtle does not rotate")
     print("Press Ctrl+T to stop")
