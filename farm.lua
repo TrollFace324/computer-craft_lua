@@ -1,6 +1,6 @@
 local args = { ... }
 
-local PROGRAM_VERSION = "5.2.1-obstruction-safe"
+local PROGRAM_VERSION = "5.3-offload-up"
 local DATABASE_FILE = "crop_profiles_v5_1.db"
 
 local PLACEMENT_ACCESS_SIDE = "left"
@@ -898,6 +898,23 @@ local function collectAllFrontDrops()
     turtle.select(1)
 end
 
+local function dropAllInventoryUp()
+    local allDropped = true
+
+    for slot = 1, 16 do
+        if turtle.getItemCount(slot) > 0 then
+            turtle.select(slot)
+
+            if not turtle.dropUp() then
+                allDropped = false
+            end
+        end
+    end
+
+    turtle.select(1)
+    return allDropped
+end
+
 local function collectOneFrontItemWhilePoweredOff()
     turtle.select(1)
 
@@ -932,13 +949,15 @@ local function enterPoweredOffState()
 
     collectAllFrontDrops()
     compactInventory()
+    dropAllInventoryUp()
 
     workingCropName = nil
 
-    -- Powered-off initial state: allow manual planting, but perform no
-    -- automatic inspection, growth, breaking, pickup or replanting.
     setPlacementAccess(true)
-    status("Power OFF: cleanup complete; waiting for back redstone")
+    status(
+        "Power OFF: cleanup complete; "
+        .. "inventory is being offloaded to the barrel above"
+    )
 end
 
 local function itemPath(itemName)
@@ -1501,19 +1520,40 @@ local function farmLoop()
                 setManualHarvestPulses(false)
                 redstone.setOutput(MANUAL_HARVEST_SIDE, false)
                 setPlacementAccess(true)
-                status("Power OFF: waiting for back redstone")
+
+                if not dropAllInventoryUp() then
+                    status(
+                        "Power OFF: waiting for back redstone; "
+                        .. "barrel above is full or missing"
+                    )
+                else
+                    status(
+                        "Power OFF: waiting for back redstone; "
+                        .. "inventory offloaded upward"
+                    )
+                end
             end
 
             while not powerEnabled do
-                -- Powered-off state continuously keeps the left output
-                -- enabled and tries to collect item entities from the
-                -- front. turtle.suck() does not break a planted crop.
                 setPlacementAccess(true)
                 stopDispenser()
                 setManualHarvestPulses(false)
                 redstone.setOutput(MANUAL_HARVEST_SIDE, false)
 
                 collectOneFrontItemWhilePoweredOff()
+
+                if not dropAllInventoryUp() then
+                    status(
+                        "Power OFF: the barrel above is full or missing; "
+                        .. "inventory offload will be retried"
+                    )
+                else
+                    status(
+                        "Power OFF: left output ON; "
+                        .. "inventory offloaded to the barrel above"
+                    )
+                end
+
                 sleep(GAME_TICK)
             end
         else
@@ -1552,6 +1592,7 @@ local function main()
     print("Back OFF during work: break crop, collect drops, enter idle")
     print("While OFF, the left output stays continuously ON")
     print("While OFF, the turtle continuously tries to suck front items")
+    print("While OFF, all inventory is dropped into the barrel above")
     print("A crop placed while OFF is left untouched")
     print("Back ON: resume work with the crop currently in front")
     print("Ordinary front blocks pause the farm instead of causing an error")
