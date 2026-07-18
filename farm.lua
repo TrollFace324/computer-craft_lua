@@ -1,20 +1,22 @@
 local args = { ... }
 
-local PROGRAM_VERSION = "3.3-redstone-only"
-local DATABASE_FILE = "crop_profiles_v3.db"
+local PROGRAM_VERSION = "4.0-front-pickup"
+local DATABASE_FILE = "crop_profiles_v4.db"
 
 local LOCK_SIDE = "top"
 local DISPENSER_SIDE = "right"
-local CHEST_SIDE = "bottom"
 
 local PULSE_TIME = 0.12
 local AFTER_PULSE_DELAY = 0.40
 local PLAYER_CHECK_DELAY = 0.05
-local DROP_SETTLE_DELAY = 0.60
+local DROP_SETTLE_DELAY = 0.35
 local RETRY_DELAY = 1.00
+local PICKUP_RETRY_DELAY = 0.08
 
 local MAX_LEARNING_PULSES = 256
-local MAX_PULL_OPERATIONS = 64
+local MAX_PICKUP_PASSES = 96
+local PICKUP_QUIET_PASSES = 8
+local MIN_EMPTY_SLOTS_BEFORE_HARVEST = 2
 
 local BUILTIN_CROPS = {
     ["minecraft:wheat"] = {
@@ -45,7 +47,7 @@ local BUILTIN_CROPS = {
 }
 
 local database = {
-    version = 3,
+    version = 4,
     profiles = {}
 }
 
@@ -167,26 +169,6 @@ local function saveDatabase()
 
     handle.write(textutils.serialize(database))
     handle.close()
-end
-
-local function inventoryAt(side)
-    if not peripheral.isPresent(side) then
-        return nil
-    end
-
-    if not peripheral.hasType(side, "inventory") then
-        return nil
-    end
-
-    return peripheral.wrap(side)
-end
-
-local function waitForEquipment()
-    while not inventoryAt(CHEST_SIDE) do
-        setLocked(true)
-        status("No chest found below the turtle")
-        sleep(RETRY_DELAY)
-    end
 end
 
 local function pulseBoneMeal()
@@ -449,23 +431,6 @@ local function growKnownPlant(profile)
     end
 end
 
-local function dumpInventoryDown()
-    local allDropped = true
-
-    for slot = 1, 16 do
-        if turtle.getItemCount(slot) > 0 then
-            turtle.select(slot)
-
-            if not turtle.dropDown() then
-                allDropped = false
-            end
-        end
-    end
-
-    turtle.select(1)
-    return allDropped
-end
-
 local function findEmptySlot()
     for slot = 1, 16 do
         if turtle.getItemCount(slot) == 0 then
@@ -476,31 +441,51 @@ local function findEmptySlot()
     return nil
 end
 
-local function pullFromChest()
-    if not dumpInventoryDown() then
-        return false, "The chest below is full"
+local function countEmptySlots()
+    local count = 0
+
+    for slot = 1, 16 do
+        if turtle.getItemCount(slot) == 0 then
+            count = count + 1
+        end
     end
 
-    local pulls = 0
+    return count
+end
 
-    for _ = 1, MAX_PULL_OPERATIONS do
-        local slot = findEmptySlot()
+local function collectFrontDrops()
+    local quietPasses = 0
+    local totalPasses = 0
+    local pickedAnything = false
 
-        if not slot then
-            break
+    while quietPasses < PICKUP_QUIET_PASSES
+        and totalPasses < MAX_PICKUP_PASSES do
+
+        totalPasses = totalPasses + 1
+        local pickedThisPass = false
+
+        for slot = 1, 16 do
+            turtle.select(slot)
+
+            local picked = turtle.suck()
+
+            if picked then
+                pickedThisPass = true
+                pickedAnything = true
+                sleep(0.02)
+            end
         end
 
-        turtle.select(slot)
-
-        if not turtle.suckDown() then
-            break
+        if pickedThisPass then
+            quietPasses = 0
+        else
+            quietPasses = quietPasses + 1
+            sleep(PICKUP_RETRY_DELAY)
         end
-
-        pulls = pulls + 1
     end
 
     turtle.select(1)
-    return true, pulls
+    return pickedAnything
 end
 
 local function itemPath(itemName)
@@ -600,7 +585,7 @@ local function tryPlant(profile)
     local candidates = sortedPlantingCandidates(profile)
 
     if #candidates == 0 then
-        return false, "No planting item was found in the chest"
+        return false, "No planting item was found in the turtle inventory"
     end
 
     for _, candidate in ipairs(candidates) do
@@ -649,33 +634,40 @@ local function replant(profile)
             return false
         end
 
-        status("Waiting for planting items in the chest below")
+        collectFrontDrops()
 
-        local pulled, result = pullFromChest()
+        local planted, reason = tryPlant(profile)
 
-        if not pulled then
-            status(tostring(result))
-            sleep(RETRY_DELAY)
-        elseif result == 0 then
-            sleep(RETRY_DELAY)
-        else
-            local planted, reason = tryPlant(profile)
-
-            if not dumpInventoryDown() then
-                status("The chest below is full")
-                sleep(RETRY_DELAY)
-            elseif planted then
-                status("Crop planted")
-                return true
-            else
-                status(reason)
-                sleep(RETRY_DELAY)
-            end
+        if planted then
+            status("Crop planted")
+            return true
         end
+
+        if countEmptySlots() == 0 then
+            status(
+                "Turtle inventory is full and no planting item is available; "
+                .. "remove some harvested items"
+            )
+        else
+            status(reason .. "; waiting for a front drop or a manually added item")
+        end
+
+        sleep(RETRY_DELAY)
     end
 end
 
 local function waitForPlayerHarvest(profile)
+    setLocked(true)
+
+    while countEmptySlots() < MIN_EMPTY_SLOTS_BEFORE_HARVEST do
+        status(
+            "Free at least "
+            .. tostring(MIN_EMPTY_SLOTS_BEFORE_HARVEST)
+            .. " turtle inventory slots before harvesting"
+        )
+        sleep(RETRY_DELAY)
+    end
+
     setLocked(false)
 
     status(
@@ -695,6 +687,7 @@ local function waitForPlayerHarvest(profile)
 
             setLocked(true)
             sleep(DROP_SETTLE_DELAY)
+            collectFrontDrops()
             return
         end
     end
@@ -790,7 +783,7 @@ local function commandReset()
     end
 
     database = {
-        version = 3,
+        version = 4,
         profiles = {}
     }
 
@@ -859,12 +852,11 @@ local function main()
 
     print("CropFarm " .. PROGRAM_VERSION)
     print("Right side is redstone output only")
-    print("The dispenser may be remote")
-    print("Shears are not required")
+    print("Drops are collected directly from the front")
+    print("No chest is used")
+    print("The turtle stores and replants items itself")
     print("The turtle does not rotate")
     print("Press Ctrl+T to stop")
-
-    waitForEquipment()
 
     while true do
         local block = inspectFront()
