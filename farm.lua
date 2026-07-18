@@ -1,6 +1,6 @@
 local args = { ... }
 
-local PROGRAM_VERSION = "4.10-growth-pulses"
+local PROGRAM_VERSION = "4.11-square-wave"
 local DATABASE_FILE = "crop_profiles_v4_1.db"
 
 local PLACEMENT_ACCESS_SIDE = "left"
@@ -15,8 +15,8 @@ local BONE_MEAL_RESET_TIME = 0.15
 local PLAYER_CHECK_DELAY = GAME_TICK
 local RETRY_DELAY = GAME_TICK
 
-local MANUAL_HARVEST_PULSE_INTERVAL = 4.00
-local MANUAL_HARVEST_PULSE_TIME = 0.10
+local GROWTH_SIGNAL_ON_TIME = 4.00
+local GROWTH_SIGNAL_OFF_TIME = 4.00
 
 local MAX_LEARNING_PULSES = 256
 local MIN_EMPTY_SLOTS_BEFORE_HARVEST = 3
@@ -90,39 +90,45 @@ local function setManualHarvestPulses(enabled)
     os.queueEvent("manual_harvest_pulse_state")
 end
 
+local function waitGrowthSignalPhase(seconds)
+    local timer = os.startTimer(seconds)
+
+    while manualHarvestPulsesEnabled do
+        local event, id = os.pullEvent()
+
+        if event == "timer" and id == timer then
+            return manualHarvestPulsesEnabled
+        end
+
+        if event == "manual_harvest_pulse_state"
+            and not manualHarvestPulsesEnabled then
+            return false
+        end
+    end
+
+    return false
+end
+
 local function manualHarvestPulseLoop()
     redstone.setOutput(MANUAL_HARVEST_SIDE, false)
 
     while true do
         while not manualHarvestPulsesEnabled do
+            redstone.setOutput(MANUAL_HARVEST_SIDE, false)
             os.pullEvent("manual_harvest_pulse_state")
         end
 
         if manualHarvestPulsesEnabled then
             redstone.setOutput(MANUAL_HARVEST_SIDE, true)
-            sleep(MANUAL_HARVEST_PULSE_TIME)
-            redstone.setOutput(MANUAL_HARVEST_SIDE, false)
+
+            if not waitGrowthSignalPhase(GROWTH_SIGNAL_ON_TIME) then
+                redstone.setOutput(MANUAL_HARVEST_SIDE, false)
+            end
         end
 
         if manualHarvestPulsesEnabled then
-            local waitTime =
-                MANUAL_HARVEST_PULSE_INTERVAL
-                - MANUAL_HARVEST_PULSE_TIME
-
-            local timer = os.startTimer(math.max(waitTime, 0))
-
-            while manualHarvestPulsesEnabled do
-                local event, id = os.pullEvent()
-
-                if event == "timer" and id == timer then
-                    break
-                end
-
-                if event == "manual_harvest_pulse_state"
-                    and not manualHarvestPulsesEnabled then
-                    break
-                end
-            end
+            redstone.setOutput(MANUAL_HARVEST_SIDE, false)
+            waitGrowthSignalPhase(GROWTH_SIGNAL_OFF_TIME)
         end
     end
 end
@@ -791,7 +797,7 @@ local function replant(profile)
         if planted then
             setPlacementAccess(false)
             setManualHarvestPulses(profile.manualHarvest)
-            status("Crop planted; top growth pulses restarted")
+            status("Crop planted; top 4s/4s signal restarted")
             return true
         end
 
@@ -803,7 +809,7 @@ local function replant(profile)
             if plantedAfterPickup then
                 setPlacementAccess(false)
                 setManualHarvestPulses(profile.manualHarvest)
-                status("Crop planted; top growth pulses restarted")
+                status("Crop planted; top 4s/4s signal restarted")
                 return true
             end
         else
@@ -1084,9 +1090,9 @@ local function main()
     print("Right bone-meal signal: 0.50s on, 0.15s off")
     print("Left is continuously ON whenever the crop position is empty")
     print("Left is ON while empty or while the crop is mature")
-    print("Top pulses every 4.00s only while a crop is growing")
-    print("Top pulses stop at maturity and restart after planting")
-    print("Top pulse width: 0.10s")
+    print("Top growth signal: 4.00s ON, 4.00s OFF")
+    print("Top signal stops immediately at maturity")
+    print("Top signal restarts after planting")
     print("No chest is used")
     print("The turtle does not rotate")
     print("Press Ctrl+T to stop")
