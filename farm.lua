@@ -1,6 +1,6 @@
 local args = { ... }
 
-local PROGRAM_VERSION = "4.5-instant-replant"
+local PROGRAM_VERSION = "4.5.1-scope-fix"
 local DATABASE_FILE = "crop_profiles_v4_1.db"
 
 local LOCK_SIDE = "top"
@@ -376,6 +376,8 @@ local function isMature(block, profile)
     return tablesEqual(block.state, profile.matureState)
 end
 
+local collectAvailableFrontDrops
+
 local function growKnownPlant(profile)
     setLocked(true)
 
@@ -508,7 +510,7 @@ local function suckFrontOnce()
     return turtle.suck()
 end
 
-local function collectAvailableFrontDrops(maxAttempts)
+collectAvailableFrontDrops = function(maxAttempts)
     maxAttempts = maxAttempts or 4
 
     for _ = 1, maxAttempts do
